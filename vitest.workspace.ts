@@ -122,13 +122,12 @@ export default defineWorkspace([
       // reloads the test module mid-run and Vitest loses the suite it was in —
       // reported as "failed to find the current suite", on a machine where the
       // dependency cache happened to be cold.
-      include: [
-        "react",
-        "react/jsx-runtime",
-        "react/jsx-dev-runtime",
-        "react-dom",
-        "react-dom/client",
-      ],
+      // Only the JSX runtimes, which is what the scan misses and what Vitest's
+      // warning names. Listing react and react-dom here as well pre-bundles them
+      // separately from the copy the component libraries resolve, and two React
+      // instances leave the hook dispatcher null — "Cannot read properties of
+      // null (reading 'useMemo')" from inside react-dom.
+      include: ["react/jsx-runtime", "react/jsx-dev-runtime"],
     },
     test: {
       name: "browser",
