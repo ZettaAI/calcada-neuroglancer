@@ -24,18 +24,16 @@ import {
   AnnotationLayerState,
 } from "#src/annotation/annotation_layer_state.js";
 import type { MultiscaleAnnotationSource } from "#src/annotation/frontend_source.js";
-import type {
-  Annotation,
-  AnnotationReference,
-  AnnotationSource,
-  Line,
-  Point,
-} from "#src/annotation/index.js";
 import {
-  AnnotationType,
+  type Annotation,
   type AnnotationPropertySpec,
+  type AnnotationReference,
+  type AnnotationSource,
+  AnnotationType,
+  type Line,
   LocalAnnotationSource,
   makeDataBoundsBoundingBoxAnnotationSet,
+  type Point,
 } from "#src/annotation/index.js";
 import { LayerChunkProgressInfo } from "#src/chunk_manager/base.js";
 import type { ChunkManager } from "#src/chunk_manager/frontend.js";
@@ -1038,6 +1036,9 @@ function makeColoredAnnotationState(
 
   const displayState = new AnnotationDisplayState();
   displayState.color.value.set(color);
+  // prop_<name>() resolves against this list, not the one the source carries;
+  // unset, any shader naming a property fails to parse and falls back to plain.
+  displayState.annotationProperties.value = properties;
 
   displayState.relationshipStates.set("associated segments", {
     segmentationState: new WatchableValue(layer.displayState),
