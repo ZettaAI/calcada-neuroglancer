@@ -9,7 +9,7 @@
  *      http://www.apache.org/licenses/LICENSE-2.0
  */
 
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import {
   Tooltip,
@@ -39,6 +39,38 @@ export function TruncatedLabel({
 }) {
   const labelRef = useRef<HTMLSpanElement>(null);
   const [truncated, setTruncated] = useState(false);
+  const [open, setOpen] = useState(false);
+  // A scroll-triggered close skips the normal fade/zoom-out: the trigger's
+  // on-screen position is already stale, so animating the bubble out over
+  // its old (now wrong) position would just be a few more frames of a
+  // tooltip visibly detached from what it's supposed to be labeling.
+  const [skipCloseAnimation, setSkipCloseAnimation] = useState(false);
+
+  const handleOpenChange = (nextOpen: boolean) => {
+    if (nextOpen) setSkipCloseAnimation(false);
+    setOpen(nextOpen);
+  };
+
+  // Scrolling any ancestor should hide the bubble immediately rather than
+  // leaving it hovering over a trigger that has since moved or scrolled out
+  // of view. Scroll doesn't bubble, but this still catches a scroll on any
+  // nested scroll container because the capture phase visits every ancestor
+  // on the way down.
+  useEffect(() => {
+    if (!open) return;
+    const closeOnScroll = () => {
+      setSkipCloseAnimation(true);
+      setOpen(false);
+    };
+    document.addEventListener("scroll", closeOnScroll, {
+      capture: true,
+      passive: true,
+    });
+    return () =>
+      document.removeEventListener("scroll", closeOnScroll, {
+        capture: true,
+      });
+  }, [open]);
 
   const measure = () => {
     const label = labelRef.current;
@@ -64,7 +96,7 @@ export function TruncatedLabel({
   useLayoutEffect(measure, [text]);
 
   return (
-    <Tooltip>
+    <Tooltip open={open} onOpenChange={handleOpenChange}>
       <TooltipTrigger
         render={
           <span
@@ -75,7 +107,9 @@ export function TruncatedLabel({
       >
         {text}
       </TooltipTrigger>
-      {truncated && <TooltipContent>{text}</TooltipContent>}
+      {truncated && !skipCloseAnimation && (
+        <TooltipContent>{text}</TooltipContent>
+      )}
     </Tooltip>
   );
 }
