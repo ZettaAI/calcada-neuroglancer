@@ -116,6 +116,19 @@ export default defineWorkspace([
         "tests/**/*.browser_test.ts",
         "src/*.bundle.js",
       ],
+      // The vendored shadcn components reach the React runtime through bare
+      // specifiers the entry scan does not follow, so Vite meets them for the
+      // first time while a test is already running and re-optimises. That
+      // reloads the test module mid-run and Vitest loses the suite it was in —
+      // reported as "failed to find the current suite", on a machine where the
+      // dependency cache happened to be cold.
+      include: [
+        "react",
+        "react/jsx-runtime",
+        "react/jsx-dev-runtime",
+        "react-dom",
+        "react-dom/client",
+      ],
     },
     test: {
       name: "browser",
