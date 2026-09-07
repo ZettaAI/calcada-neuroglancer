@@ -5931,10 +5931,16 @@ export class CalcadaGraphSource extends SegmentationGraphSource {
     parent.style.display = "contents";
     const toolbox = document.createElement("div");
     toolbox.className = "neuroglancer-segmentation-toolbox";
-    parent.appendChild(
+    // Shared grid: each row's label and control become direct grid items
+    // (see calcada.css), so all three labels share one automatically-sized
+    // column and every control's input starts flush at the same left edge,
+    // instead of each row independently sizing its own label.
+    const layerControls = document.createElement("div");
+    layerControls.className = "neuroglancer-calcada-layer-controls";
+    layerControls.appendChild(
       addLayerControlToOptionsTab(tab, layer, tab.visibility, timeControl),
     );
-    parent.appendChild(
+    layerControls.appendChild(
       addLayerControlToOptionsTab(
         tab,
         layer,
@@ -5942,9 +5948,10 @@ export class CalcadaGraphSource extends SegmentationGraphSource {
         labeledTimestampControl,
       ),
     );
-    parent.appendChild(
+    layerControls.appendChild(
       addLayerControlToOptionsTab(tab, layer, tab.visibility, branchControl),
     );
+    parent.appendChild(layerControls);
     toolbox.appendChild(
       makeToolButton(context, layer.toolBinder, {
         toolJson: CALCADA_MULTICUT_SEGMENTS_TOOL_ID,

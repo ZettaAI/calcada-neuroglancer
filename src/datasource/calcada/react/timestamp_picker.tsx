@@ -11,11 +11,15 @@
 
 import { format } from "date-fns";
 import { CalendarIcon, XIcon } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { useWatchable } from "#src/editing/ui/interop/react/use_watchable.js";
 import type { WatchableValueInterface } from "#src/trackable_value.js";
-import { Button, buttonVariants } from "@/components/ui/button";
+import {
+  CONTROL_SIZE_CLASS,
+  dropdownTriggerClassName,
+} from "#src/widget/react/searchable_select.js";
+import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
 import { Input } from "@/components/ui/input";
 import {
@@ -70,6 +74,20 @@ export function CalcadaTimestampPicker({
   const earliest = new Date(useWatchable(timestampLimit));
   const selected = timestamp === undefined ? undefined : new Date(timestamp);
 
+  // A partial/invalid time (e.g. only the hour typed so far) never commits —
+  // the native input reports an empty `.value` for it, same as a genuinely
+  // blank field — so this is the only way to know there's stray input sitting
+  // in the field with nothing committed to `selected` for it to show up in.
+  const [hasPartialInput, setHasPartialInput] = useState(false);
+  const timeInputRef = useRef<HTMLInputElement>(null);
+
+  // Any external change to the committed timestamp (calendar pick, another
+  // control, the time-travel guard snapping back) makes a lingering partial
+  // edit stale.
+  useEffect(() => {
+    setHasPartialInput(false);
+  }, [timestamp]);
+
   const commit = (date: Date) => {
     const now = Date.now();
     intermediateTimestamp.value = Math.min(
@@ -78,14 +96,23 @@ export function CalcadaTimestampPicker({
     );
   };
 
+  const resetToLive = () => {
+    intermediateTimestamp.value = undefined;
+    setHasPartialInput(false);
+    // `selected` was already undefined for a partial-but-invalid edit (it
+    // never committed), so the controlled `value` prop below is unchanged
+    // and React won't touch the DOM node — without this, the native input's
+    // own uncommitted partial digits would keep showing after the reset.
+    if (timeInputRef.current !== null) {
+      timeInputRef.current.value = "";
+    }
+  };
+
   return (
     <div className="neuroglancer-calcada-timestamp-picker">
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger
-          className={cn(
-            buttonVariants({ variant: "outline", size: "sm" }),
-            "min-w-0 flex-1 justify-start font-normal",
-          )}
+          className={dropdownTriggerClassName("min-w-28 flex-1 justify-start")}
         >
           <CalendarIcon />
           <span
@@ -125,14 +152,28 @@ export function CalcadaTimestampPicker({
       </Popover>
 
       <Input
+        ref={timeInputRef}
         type="time"
         step="1"
         aria-label="Time of day"
-        className="w-28 shrink-0 appearance-none [&::-webkit-calendar-picker-indicator]:hidden"
+        className={cn(
+          CONTROL_SIZE_CLASS,
+          "w-28 shrink-0 appearance-none [&::-webkit-calendar-picker-indicator]:hidden",
+        )}
         value={selected === undefined ? "" : timeOfDay(selected)}
+        // A native time/date input fires no `input`/`change` event at all
+        // while it's mid-edit and incomplete (e.g. only the hour typed) —
+        // only once the value becomes complete or is fully cleared. `keyup`
+        // is the one event that still fires on every keystroke regardless,
+        // so it's the only way to notice a partial edit as it happens rather
+        // than only once (if ever) it resolves to something valid.
+        onKeyUp={(e) => {
+          setHasPartialInput(e.currentTarget.validity.badInput);
+        }}
         onChange={(e) => {
           const time = e.currentTarget.value;
           if (time === "") return;
+          setHasPartialInput(false);
           commit(withTimeOfDay(selected ?? new Date(), time));
         }}
       />
@@ -144,10 +185,8 @@ export function CalcadaTimestampPicker({
               variant="ghost"
               size="icon-sm"
               aria-label="Return to live"
-              disabled={selected === undefined}
-              onClick={() => {
-                intermediateTimestamp.value = undefined;
-              }}
+              disabled={selected === undefined && !hasPartialInput}
+              onClick={resetToLive}
             />
           }
         >

@@ -147,6 +147,23 @@ describe("TruncatedLabel", () => {
     }, TIMEOUT);
   });
 
+  it("closes instantly when an ancestor scrolls, instead of following the trigger", async () => {
+    await hoverLabel();
+    expect(bubble()).not.toBeNull();
+
+    // Scroll doesn't bubble, but the capture phase still visits every
+    // ancestor of whatever container actually scrolled — dispatching on
+    // `target` (the label's own container) stands in for that.
+    target.dispatchEvent(new Event("scroll"));
+    // No grace period and no animation-out wait: the trigger's on-screen
+    // position is already stale, so the bubble must be gone (or at least
+    // leaving) as soon as React flushes the state update, not fading on the
+    // old position.
+    await settle(0);
+    const after = bubble();
+    expect(after === null || after.hasAttribute("data-closed")).toBe(true);
+  });
+
   it("does not intercept the pointer", async () => {
     await hoverLabel();
     const content = bubble()!;

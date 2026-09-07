@@ -176,6 +176,33 @@
   filter: grayscale(1);
 }
 
+/* The Branch/Time/Label rows share this grid instead of each being its own
+   independent row: a shared `max-content` label column sizes itself to the
+   widest of the three labels (no hardcoded width), so every control starts
+   flush at the same left edge, and the right-hand padding keeps the row off
+   the panel's edge. `display: contents` on each row hands its label and
+   control straight to this grid as the two cells of one grid row. */
+.neuroglancer-calcada-layer-controls {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: start;
+  column-gap: 8px;
+  row-gap: 6px;
+  padding: 4px 10px 4px 2px;
+}
+
+.neuroglancer-calcada-layer-controls > .neuroglancer-layer-control-container {
+  display: contents;
+}
+
+/* The outer grid's column-gap already spaces label from control; this
+   shared/legacy margin (from `layer_control.css`, meant for the ungridded
+   flex row every other control still uses) would otherwise stack on top of
+   it and widen just this gap relative to the row-to-row gap. */
+.neuroglancer-calcada-layer-controls .neuroglancer-layer-control-control {
+  margin-left: 0;
+}
+
 .neuroglancer-calcada-branch-control {
   display: flex;
   flex-wrap: wrap;
@@ -235,12 +262,6 @@
   flex-basis: 100%;
 }
 
-.neuroglancer-layer-control-container:has(
-    .neuroglancer-calcada-branch-control
-  ) {
-  align-items: flex-start;
-}
-
 .neuroglancer-calcada-branch-control .calcada-open-diff {
   white-space: nowrap;
 }
@@ -250,14 +271,18 @@
   min-width: 0;
 }
 
-/* Calendar button / time field / clear button on one row, the calendar button
-   absorbing the spare width so the fixed-width time field never shrinks. */
+/* Calendar button, time field, and clear button share a row while there's
+   room. The calendar button has no fixed basis so it's the one that wraps to
+   its own line first on a narrow sidebar, leaving the fixed-width time field
+   and clear button together on the line below instead of any of the three
+   overflowing the panel. */
 .neuroglancer-calcada-timestamp-picker {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 4px;
   min-width: 0;
-  flex: 1 1 auto;
+  max-width: 100%;
 }
 
 .piece-split-debug-pieces {
