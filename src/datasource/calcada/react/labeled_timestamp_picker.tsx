@@ -17,13 +17,7 @@ import { useWatchable } from "#src/editing/ui/interop/react/use_watchable.js";
 import type { WatchableValueInterface } from "#src/trackable_value.js";
 import { WatchableValue } from "#src/trackable_value.js";
 import type { ListboxOption } from "#src/widget/listbox_dropdown.js";
-import { TruncatedLabel } from "#src/widget/react/truncated_label.js";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-} from "@/components/ui/select";
+import { SearchableSelect } from "#src/widget/react/searchable_select.js";
 
 export const LABELED_TIMESTAMP_CONTROL_TITLE =
   "Labeled timestamps for the current branch. Selecting one switches the view to that point in time (read-only).";
@@ -70,37 +64,18 @@ export function CalcadaLabeledTimestampPicker({
   const match = labels.find((entry) => entry.timestampMs === currentTimestamp);
   const value = match ? String(match.timestampMs) : LIVE_VALUE;
 
-  const items = options.map((option) => ({
-    value: option.key,
-    label: option.label,
-  }));
-
   return (
     <span className="neuroglancer-calcada-labeled-timestamp-select">
-      <Select
-        items={items}
+      <SearchableSelect
+        options={options}
         value={value}
-        onValueChange={(key: string) => {
+        onChange={(key) => {
           intermediateTimestamp.value =
             key === LIVE_VALUE ? undefined : Number.parseInt(key, 10);
         }}
-        onOpenChange={(open: boolean) => {
-          if (open) graph?.triggerLabeledTimestampRefresh();
-        }}
-      >
-        <SelectTrigger aria-label="Label" className="w-full min-w-0">
-          <TruncatedLabel
-            text={items.find((item) => item.value === value)?.label ?? ""}
-          />
-        </SelectTrigger>
-        <SelectContent>
-          {items.map((item) => (
-            <SelectItem key={item.value} value={item.value}>
-              <TruncatedLabel text={item.label} />
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+        onOpen={() => graph?.triggerLabeledTimestampRefresh()}
+        ariaLabel="Label"
+      />
     </span>
   );
 }
