@@ -7576,6 +7576,7 @@ class PieceSplitTool extends LayerTool<SegmentationUserLayer> {
       }
       segmentationGroupState.useTemporarySegmentEquivalences.value = true;
       let anyTint = false;
+      let anyLink = false;
       for (const piece of segmentationGroupState.segmentEquivalences.setElements(
         focus,
       )) {
@@ -7601,12 +7602,21 @@ class PieceSplitTool extends LayerTool<SegmentationUserLayer> {
             SPLIT_TARGET_COLOR_PACKED,
           );
           anyTint = true;
-        } else {
+        } else if (piece !== focus) {
           segmentationGroupState.temporarySegmentEquivalences.link(
             focus,
             piece,
           );
+          anyLink = true;
         }
+      }
+      if (!anyTint && !anyLink) {
+        // The focus names nothing live any more — a split superseded it, and
+        // its pieces are gone. Temporary equivalences left on with nothing in
+        // them un-merge the segment: every piece renders as its own object in
+        // its own colour, with no tool open to explain it.
+        resetPieceSplitDisplay();
+        return;
       }
       displayState.useTempSegmentStatedColors2d.value = anyTint;
     };
