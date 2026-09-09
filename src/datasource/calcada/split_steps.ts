@@ -6,14 +6,19 @@
  */
 
 export interface SplitStage {
-  /** The server's wave number, sent as `stop_after`. */
+  /**
+   * The server's wave number, sent as `stop_after` — except for a stage marked
+   * `clientOnly`, whose number only orders it in the panel.
+   */
   wave: number;
   label: string;
   title: string;
   /** Whether the server may run this stage more than once in one request. */
   repeats: boolean;
-  /** Whether a request can be told to stop after this wave. All of them can. */
+  /** Whether a request can be told to stop after this wave. */
   stoppable: boolean;
+  /** A stage the panel runs by itself, with no request behind it. */
+  clientOnly?: boolean;
 }
 
 export const SPLIT_STAGES: SplitStage[] = [
@@ -40,27 +45,65 @@ export const SPLIT_STAGES: SplitStage[] = [
     repeats: false,
     stoppable: true,
   },
+  {
+    wave: 4,
+    label: "Clear",
+    title:
+      "Removes the points — the ones placed by hand and the ones the split added. Until then they stay on screen, so the cut can be judged against what was asked for. Clearing changes nothing that was written.",
+    repeats: false,
+    stoppable: false,
+    clientOnly: true,
+  },
 ];
 
 /** The stages the panel offers as buttons. */
+export function panelStages(): SplitStage[] {
+  return SPLIT_STAGES.filter((stage) => stage.stoppable || stage.clientOnly);
+}
+
+/** The stages a request can be told to stop after. */
 export function stoppableStages(): SplitStage[] {
   return SPLIT_STAGES.filter((stage) => stage.stoppable);
 }
 
 /**
- * How a stage's button should behave given where the session stands.
+ * Whether the panel should let a stage be pressed.
  *
- * A stage behind the one reached is a rewind, which the server serves from its
- * stored snapshot; the stage reached is where the session already is; anything
- * further is a step forward. Naming the three cases here keeps the panel from
- * deciding it with inline comparisons in three places.
+ * The stages are a sequence, and only the next one in it is offered. Letting any
+ * of them be pressed at any time invited a step to run on a graph the step
+ * before it had not prepared — step 3 over a carve that never happened, or a
+ * carve replayed onto pieces its own last run superseded.
+ *
+ * Clear is the exception: it acts on what is on screen, so it is available
+ * whenever there is anything to clear, including as a way out of a half-stepped
+ * session.
  */
-export type StageAction = "rewind" | "current" | "advance";
+export function stageEnabled(
+  wave: number,
+  reached: number,
+  hasSomethingToClear: boolean,
+): boolean {
+  const stage = SPLIT_STAGES.find((s) => s.wave === wave);
+  if (stage === undefined) return false;
+  if (stage.clientOnly) return hasSomethingToClear;
+  return wave === reached + 1;
+}
 
-export function stageAction(wave: number, reached: number): StageAction {
-  if (reached === 0 || wave > reached) return "advance";
-  if (wave === reached) return "current";
-  return "rewind";
+/** Why a stage cannot be pressed, for its tooltip. */
+export function stageBlockedReason(
+  wave: number,
+  reached: number,
+): string | undefined {
+  const stage = SPLIT_STAGES.find((s) => s.wave === wave);
+  if (stage === undefined || stage.clientOnly) return undefined;
+  if (wave > reached + 1) {
+    const next = SPLIT_STAGES.find((s) => s.wave === reached + 1);
+    return `Run step ${reached + 1}${next ? ` (${next.label})` : ""} first.`;
+  }
+  if (wave <= reached) {
+    return "Already run. Clear to start over.";
+  }
+  return undefined;
 }
 
 /**
