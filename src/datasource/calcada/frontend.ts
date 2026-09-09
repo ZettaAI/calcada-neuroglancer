@@ -3813,14 +3813,10 @@ void main() {
       "pieceSplitAutoRed",
       ARTIFICIAL_RED_COLOR,
     );
-    // Default marker rendering uses size=5px which is barely visible when the
-    // viewer is zoomed in close to a slice — and the cross-section fade in
-    // slice view further drops the alpha. Bump the size, force opaque interior,
-    // and add a contrasting border so markers stand out at any zoom.
+    // Marker geometry stays at the renderer's defaults: the 20px this shader
+    // used to ask for was tuned while it silently never compiled.
     const PIECE_SPLIT_POINT_SHADER = `
 void main() {
-  setPointMarkerSize(20.0);
-  setPointMarkerBorderWidth(3.0);
   setColor(vec4(defaultColor(), 1.0));
   setPointMarkerBorderColor(vec4(1.0, 1.0, 1.0, 1.0));
 }
@@ -3829,14 +3825,9 @@ void main() {
       PIECE_SPLIT_POINT_SHADER;
     pieceSplitRedAnnotation.displayState.shader.value =
       PIECE_SPLIT_POINT_SHADER;
-    // Same size as the proofreader's own marks, told apart by a dark border
-    // instead. These sit at contacts *between* pieces, so they are deeper inside
-    // the mesh than a point somebody clicked on a surface; making them smaller
-    // as well would only make that worse.
+    // Same marks as the proofreader's own, told apart by the dark border.
     const PIECE_SPLIT_AUTO_POINT_SHADER = `
 void main() {
-  setPointMarkerSize(20.0);
-  setPointMarkerBorderWidth(4.0);
   setColor(vec4(defaultColor(), 1.0));
   setPointMarkerBorderColor(vec4(0.0, 0.0, 0.0, 1.0));
 }
