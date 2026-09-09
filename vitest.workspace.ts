@@ -45,9 +45,12 @@ const nodeDefines = {
   ...commonDefines,
 };
 
+const srcAlias = { "@": path.resolve(import.meta.dirname, "src") };
+
 function defaultNodeProject(): ViteUserConfig {
   return {
     define: { ...nodeDefines },
+    resolve: { alias: srcAlias },
     test: {
       environment: "jsdom",
       setupFiles: [
@@ -102,6 +105,7 @@ export default defineWorkspace([
   ),
   {
     define: browserDefines,
+    resolve: { alias: srcAlias },
     esbuild: {
       target: "es2022",
     },
@@ -112,6 +116,18 @@ export default defineWorkspace([
         "tests/**/*.browser_test.ts",
         "src/*.bundle.js",
       ],
+      // The vendored shadcn components reach the React runtime through bare
+      // specifiers the entry scan does not follow, so Vite meets them for the
+      // first time while a test is already running and re-optimises. That
+      // reloads the test module mid-run and Vitest loses the suite it was in —
+      // reported as "failed to find the current suite", on a machine where the
+      // dependency cache happened to be cold.
+      // Only the JSX runtimes, which is what the scan misses and what Vitest's
+      // warning names. Listing react and react-dom here as well pre-bundles them
+      // separately from the copy the component libraries resolve, and two React
+      // instances leave the hook dispatcher null — "Cannot read properties of
+      // null (reading 'useMemo')" from inside react-dom.
+      include: ["react/jsx-runtime", "react/jsx-dev-runtime"],
     },
     test: {
       name: "browser",

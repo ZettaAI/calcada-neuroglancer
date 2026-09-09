@@ -24,17 +24,16 @@ import {
   AnnotationLayerState,
 } from "#src/annotation/annotation_layer_state.js";
 import type { MultiscaleAnnotationSource } from "#src/annotation/frontend_source.js";
-import type {
-  Annotation,
-  AnnotationReference,
-  AnnotationSource,
-  Line,
-  Point,
-} from "#src/annotation/index.js";
 import {
+  type Annotation,
+  type AnnotationPropertySpec,
+  type AnnotationReference,
+  type AnnotationSource,
   AnnotationType,
+  type Line,
   LocalAnnotationSource,
   makeDataBoundsBoundingBoxAnnotationSet,
+  type Point,
 } from "#src/annotation/index.js";
 import { LayerChunkProgressInfo } from "#src/chunk_manager/base.js";
 import type { ChunkManager } from "#src/chunk_manager/frontend.js";
@@ -64,7 +63,7 @@ import {
   RENDER_RATIO_LIMIT,
   VolumeChunkSourceParameters as CalcadaVolumeChunkSourceParameters,
 } from "#src/datasource/calcada/base.js";
-import { CalcadaBranchPicker } from "#src/datasource/calcada/branch_picker.js";
+import { BRANCH_PICKER_TITLE } from "#src/datasource/calcada/branch_picker_logic.js";
 import type { EdgeCandidate } from "#src/datasource/calcada/candidate_ranking.js";
 import {
   dropDecided,
@@ -75,11 +74,16 @@ import type {
   RootDebugGraph,
 } from "#src/datasource/calcada/debug_graph.js";
 import { mergeDebugGraphs } from "#src/datasource/calcada/debug_graph.js";
+import { meshModelResolution } from "#src/datasource/calcada/mesh_model_resolution.js";
+import { CalcadaBranchPicker } from "#src/datasource/calcada/react/branch_picker.js";
 import {
   CalcadaLabeledTimestampPicker,
   LABELED_TIMESTAMP_CONTROL_TITLE,
-} from "#src/datasource/calcada/labeled_timestamp_picker.js";
-import { meshModelResolution } from "#src/datasource/calcada/mesh_model_resolution.js";
+} from "#src/datasource/calcada/react/labeled_timestamp_picker.js";
+import {
+  CalcadaTimestampPicker,
+  TIMESTAMP_CONTROL_TITLE,
+} from "#src/datasource/calcada/react/timestamp_picker.js";
 import {
   interceptedRemovals,
   TRACE_CANDIDATE_COLOR_PACKED,
@@ -91,6 +95,11 @@ import {
   classifyCandidateEdit,
   isStaleRoot,
 } from "#src/datasource/calcada/root_resolution.js";
+import {
+  panelStages,
+  stageBlockedReason,
+  stageEnabled,
+} from "#src/datasource/calcada/split_steps.js";
 import { createSerialRunner } from "#src/datasource/calcada/undo_serialization.js";
 import type {
   DataSource,
@@ -110,7 +119,7 @@ import {
   parseMultiscaleVolumeInfo,
   PrecomputedMultiscaleVolumeChunkSource,
 } from "#src/datasource/precomputed/frontend.js";
-import { mountComponent } from "#src/editing/ui/interop/component_mount.js";
+import { mountComponent } from "#src/editing/ui/interop/react/component_mount.js";
 import { WithSharedKvStoreContext } from "#src/kvstore/chunk_source_frontend.js";
 import type { SharedKvStoreContext } from "#src/kvstore/frontend.js";
 import {
@@ -144,6 +153,7 @@ import type {
   Uint64MapEntry,
 } from "#src/segmentation_display_state/frontend.js";
 import {
+  getBaseObjectColor,
   augmentSegmentId,
   resetTemporaryVisibleSegmentsState,
   SegmentationLayerSharedObject,
@@ -251,7 +261,6 @@ import { ProgressSpan } from "#src/util/progress_listener.js";
 import { NullarySignal, Signal } from "#src/util/signal.js";
 import type { Trackable } from "#src/util/trackable.js";
 import { makeCopyButton } from "#src/widget/copy_button.js";
-import { DateTimeInputWidget } from "#src/widget/datetime.js";
 import { makeDeleteButton } from "#src/widget/delete_button.js";
 import type { DependentViewContext } from "#src/widget/dependent_view_widget.js";
 import { makeEyeButton } from "#src/widget/eye_button.js";
@@ -273,6 +282,11 @@ function vec4FromVec3(vec: vec3, alpha = 0) {
 
 const RED_COLOR = vec3.fromValues(1, 0, 0);
 const BLUE_COLOR = vec3.fromValues(0, 0, 1);
+// Points the split placed itself. Still plainly the colour of their side — a
+// lighter blue and a lighter red — because the side is the thing a proofreader
+// reads off them; the dark border is what says the split placed it.
+const ARTIFICIAL_RED_COLOR = vec3.fromValues(1, 0.45, 0.5);
+const ARTIFICIAL_BLUE_COLOR = vec3.fromValues(0.45, 0.55, 1);
 const GREEN_COLOR = vec3.fromValues(0, 1, 0);
 const RED_COLOR_SEGMENT = vec4FromVec3(RED_COLOR, 0.5);
 const BLUE_COLOR_SEGMENT = vec4FromVec3(BLUE_COLOR, 0.5);
@@ -1012,16 +1026,20 @@ function makeColoredAnnotationState(
   loadedSubsource: LoadedDataSubsource,
   subsubsourceId: string,
   color: vec3,
+  properties: AnnotationPropertySpec[] = [],
 ) {
   const { subsourceEntry } = loadedSubsource;
   const source = new LocalAnnotationSource(
     loadedSubsource.loadedDataSource.transform,
-    new WatchableValue([]),
+    new WatchableValue(properties),
     ["associated segments"],
   );
 
   const displayState = new AnnotationDisplayState();
   displayState.color.value.set(color);
+  // prop_<name>() resolves against this list, not the one the source carries;
+  // unset, any shader naming a property fails to parse and falls back to plain.
+  displayState.annotationProperties.value = properties;
 
   displayState.relationshipStates.set("associated segments", {
     segmentationState: new WatchableValue(layer.displayState),
@@ -1882,6 +1900,9 @@ interface PointEntry {
   // nearest in-piece voxel).
   pieceId: bigint;
   origin: "2d" | "3d";
+  // Set only on points the split placed itself, naming the side it put them on.
+  // Absent on a point the proofreader placed.
+  artificialColor?: "blue" | "red";
 }
 
 const PIECE_SPLIT_BLUE_KEY = "blue";
@@ -1902,6 +1923,18 @@ class PieceSplitState extends RefCounted implements Trackable {
   // default: the image volume is then never read, which makes the split
   // several seconds faster; the cut runs on geometry and the data term alone.
   useImage = new WatchableValue<boolean>(false);
+  // Whether the Cut tool is open. Session-only, never serialised: the point
+  // markers belong to the act of cutting, so nothing should draw them once the
+  // tool is put down.
+  active = new WatchableValue<boolean>(false);
+  // Step the split one stage at a time instead of running it whole. Session
+  // only: it is a way of working, not part of the cut being described, and a
+  // saved state that reopened in advanced mode would surprise.
+  advanced = new WatchableValue<boolean>(false);
+  // Points the last step placed. Session only and never serialised: they are
+  // derived from the graph, so a saved state that restored them could restore
+  // points the graph no longer justifies.
+  artificialPoints = new WatchableValue<PointEntry[]>([]);
 
   constructor() {
     super();
@@ -1910,12 +1943,15 @@ class PieceSplitState extends RefCounted implements Trackable {
     this.registerDisposer(this.bluePoints.changed.add(reemit));
     this.registerDisposer(this.redPoints.changed.add(reemit));
     this.registerDisposer(this.useImage.changed.add(reemit));
+    this.registerDisposer(this.advanced.changed.add(reemit));
+    this.registerDisposer(this.artificialPoints.changed.add(reemit));
   }
 
   reset() {
     this.blueGroup.value = true;
     this.bluePoints.value = [];
     this.redPoints.value = [];
+    this.artificialPoints.value = [];
   }
 
   swapGroup() {
@@ -2227,8 +2263,11 @@ class CalcadaDebugSession extends RefCounted {
         window,
         "calcada-debug-toggle-piece",
         (event: ActionEvent<unknown>) => {
-          event.stopPropagation();
-          this.toggleUnderCursor();
+          // Only swallow the gesture when the mode actually acts on it. Debug
+          // sits alongside whatever else the proofreader is doing, and taking
+          // every double-click leaves them unable to select a segment the mode
+          // knows nothing about — with nothing on screen to say why.
+          if (this.toggleUnderCursor()) event.stopPropagation();
         },
       ),
     );
@@ -2243,11 +2282,15 @@ class CalcadaDebugSession extends RefCounted {
    * only once it is does the same gesture start acting on its individual
    * pieces. Removing a segment stays with the Seg. tab, so this gesture can
    * never take one away by surprise.
+   *
+   * Returns whether the mode acted. A piece it is not drawing is none of its
+   * business: hiding that mesh does nothing anybody can see, and swallowing
+   * the gesture to do it stops the segment being selected at all.
    */
-  private toggleUnderCursor() {
+  private toggleUnderCursor(): boolean {
     const selection = this.layer.displayState.segmentSelectionState;
     const piece = selection.baseValue;
-    if (piece === undefined || piece === null || piece === 0n) return;
+    if (piece === undefined || piece === null || piece === 0n) return false;
     const { visibleSegments } = this.segmentsState;
     const segment = selection.hasSelectedSegment
       ? selection.selectedSegment
@@ -2258,9 +2301,19 @@ class CalcadaDebugSession extends RefCounted {
       !visibleSegments.has(piece)
     ) {
       visibleSegments.add(segment);
-      return;
+      return true;
     }
+    if (!this.isDebuggedPiece(piece)) return false;
     this.connection.togglePieceMesh(piece);
+    return true;
+  }
+
+  /** Whether the overlay is drawing this piece, and so has a mesh to toggle. */
+  private isDebuggedPiece(piece: bigint): boolean {
+    for (const graph of this.graphCache.values()) {
+      if (graph.pieces.some((p) => p.id === piece)) return true;
+    }
+    return false;
   }
 
   private async enter() {
@@ -2341,13 +2394,41 @@ class CalcadaDebugSession extends RefCounted {
     const siblingLines: Line[] = [];
     let undrawable = 0;
     let siblingEdgeCount = 0;
-    const lineBetween = (from: vec3, to: vec3): Line => ({
+    const lineBetween = (from: vec3, to: vec3, color: number): Line => ({
       pointA: from,
       pointB: to,
       id: "",
       type: AnnotationType.LINE,
-      properties: [],
+      properties: [color],
     });
+
+    // Which segment an edge belongs to, and what that segment looked like
+    // before the mode recoloured its pieces. Reading the colour off the root
+    // rather than a piece is what makes it the pre-D colour: the temporary
+    // stated colours applied below are keyed by piece.
+    const rootByPiece = new Map<bigint, bigint>();
+    for (const piece of graph.pieces) {
+      if (piece.root !== undefined) rootByPiece.set(piece.id, piece.root);
+    }
+    const segmentColor = new Map<bigint, number>();
+    const colorOfRoot = (root: bigint) => {
+      let packed = segmentColor.get(root);
+      if (packed === undefined) {
+        // getBaseObjectColor writes into a shared scratch buffer typed as a
+        // plain Float32Array; packColor wants a vec3, and the first three
+        // components are exactly that.
+        const rgb = getBaseObjectColor(displayState, root);
+        packed = packColor(vec3.fromValues(rgb[0], rgb[1], rgb[2]));
+        segmentColor.set(root, packed);
+      }
+      return packed;
+    };
+
+    // Telling zero-affinity edges apart is a cut-tool concern — it marks the
+    // sibling edges a split just wrote. In debug on its own it says nothing, so
+    // edges are coloured by the segment they belong to instead.
+    const cutting = this.connection.state.pieceSplitState.active.value;
+    const fallbackColor = packColor(WHITE_COLOR);
     for (const edge of graph.edges) {
       const centerA = centerById.get(edge.a);
       const centerB = centerById.get(edge.b);
@@ -2355,6 +2436,8 @@ class CalcadaDebugSession extends RefCounted {
         undrawable++;
         continue;
       }
+      const isSibling = edge.affinity === 0 && edge.status === "enabled";
+      const root = rootByPiece.get(edge.a) ?? rootByPiece.get(edge.b);
       // An edge is a pair of piece ids: draw it between the two anchors and
       // nothing else. Edge rows also carry a contact position, but bulk merge
       // stores it divided by the resolution rather than multiplied, so on a
@@ -2362,9 +2445,10 @@ class CalcadaDebugSession extends RefCounted {
       const line = lineBetween(
         vec3.fromValues(centerA[0], centerA[1], centerA[2]),
         vec3.fromValues(centerB[0], centerB[1], centerB[2]),
+        root === undefined ? fallbackColor : colorOfRoot(root),
       );
-      if (edge.affinity === 0 && edge.status === "enabled") {
-        siblingEdgeCount++;
+      if (isSibling) siblingEdgeCount++;
+      if (cutting && isSibling) {
         siblingLines.push(line);
       } else {
         edgeLines.push(line);
@@ -3529,12 +3613,28 @@ class GraphConnection extends SegmentationGraphSourceConnection {
       RED_COLOR,
     );
 
+    // Each line carries its own colour so the overlay can paint an edge in the
+    // colour of the segment it belongs to, the way it looked before the mode
+    // was entered. The layer colour is the fallback the shader never reaches.
     this.debugEdgeAnnotationState = makeColoredAnnotationState(
       layer,
       loadedSubsource,
       "calcadaDebugEdges",
       WHITE_COLOR,
+      [
+        {
+          type: "rgb",
+          identifier: DEBUG_EDGE_COLOR_PROPERTY,
+          description: undefined,
+          default: packColor(WHITE_COLOR),
+        },
+      ],
     );
+    this.debugEdgeAnnotationState.displayState.shader.value = `
+void main() {
+  setColor(vec4(prop_${DEBUG_EDGE_COLOR_PROPERTY}(), 1.0));
+}
+`;
     // Its own source, not the merge one. Anything added to the merge source is
     // turned into a pending merge submission by the childAdded handler below,
     // so borrowing it would both queue phantom merges and leave the lines
@@ -3701,14 +3801,22 @@ class GraphConnection extends SegmentationGraphSourceConnection {
       "pieceSplitRed",
       RED_COLOR,
     );
-    // Default marker rendering uses size=5px which is barely visible when the
-    // viewer is zoomed in close to a slice — and the cross-section fade in
-    // slice view further drops the alpha. Bump the size, force opaque interior,
-    // and add a contrasting border so markers stand out at any zoom.
+    const pieceSplitAutoBlueAnnotation = makeColoredAnnotationState(
+      layer,
+      loadedSubsource,
+      "pieceSplitAutoBlue",
+      ARTIFICIAL_BLUE_COLOR,
+    );
+    const pieceSplitAutoRedAnnotation = makeColoredAnnotationState(
+      layer,
+      loadedSubsource,
+      "pieceSplitAutoRed",
+      ARTIFICIAL_RED_COLOR,
+    );
+    // Marker geometry stays at the renderer's defaults: the 20px this shader
+    // used to ask for was tuned while it silently never compiled.
     const PIECE_SPLIT_POINT_SHADER = `
 void main() {
-  setPointMarkerSize(20.0);
-  setPointMarkerBorderWidth(3.0);
   setColor(vec4(defaultColor(), 1.0));
   setPointMarkerBorderColor(vec4(1.0, 1.0, 1.0, 1.0));
 }
@@ -3717,10 +3825,26 @@ void main() {
       PIECE_SPLIT_POINT_SHADER;
     pieceSplitRedAnnotation.displayState.shader.value =
       PIECE_SPLIT_POINT_SHADER;
+    // Same marks as the proofreader's own, told apart by the dark border.
+    const PIECE_SPLIT_AUTO_POINT_SHADER = `
+void main() {
+  setColor(vec4(defaultColor(), 1.0));
+  setPointMarkerBorderColor(vec4(0.0, 0.0, 0.0, 1.0));
+}
+`;
+    pieceSplitAutoBlueAnnotation.displayState.shader.value =
+      PIECE_SPLIT_AUTO_POINT_SHADER;
+    pieceSplitAutoRedAnnotation.displayState.shader.value =
+      PIECE_SPLIT_AUTO_POINT_SHADER;
+    // The markers describe a cut in progress, so they are drawn only while the
+    // Cut tool is open. The points themselves outlive the tool — reopening it
+    // restores them — but leaving them on screen makes the viewer look like it
+    // is mid-edit when nothing is.
     const syncPieceSplitAnnotations = (
       points: PointEntry[],
       state: AnnotationLayerState,
     ) => {
+      if (!pieceSplitState.active.value) points = [];
       const src = state.source;
       // Drop every existing annotation in the source, then re-add the current
       // points. Simpler than tracking per-point identity since the lists are
@@ -3753,15 +3877,38 @@ void main() {
         ),
       ),
     );
+    // The split's own points are drawn from the same list, split by the colour
+    // the server gave each one.
+    const syncArtificialAnnotations = () => {
+      const placed = pieceSplitState.artificialPoints.value;
+      syncPieceSplitAnnotations(
+        placed.filter((p) => p.artificialColor === "blue"),
+        pieceSplitAutoBlueAnnotation,
+      );
+      syncPieceSplitAnnotations(
+        placed.filter((p) => p.artificialColor === "red"),
+        pieceSplitAutoRedAnnotation,
+      );
+    };
+    this.registerDisposer(
+      pieceSplitState.artificialPoints.changed.add(syncArtificialAnnotations),
+    );
+    const syncBothPieceSplitAnnotations = () => {
+      syncPieceSplitAnnotations(
+        pieceSplitState.bluePoints.value,
+        pieceSplitBlueAnnotation,
+      );
+      syncPieceSplitAnnotations(
+        pieceSplitState.redPoints.value,
+        pieceSplitRedAnnotation,
+      );
+      syncArtificialAnnotations();
+    };
+    this.registerDisposer(
+      pieceSplitState.active.changed.add(syncBothPieceSplitAnnotations),
+    );
     // Initial sync from restored state.
-    syncPieceSplitAnnotations(
-      pieceSplitState.bluePoints.value,
-      pieceSplitBlueAnnotation,
-    );
-    syncPieceSplitAnnotations(
-      pieceSplitState.redPoints.value,
-      pieceSplitRedAnnotation,
-    );
+    syncBothPieceSplitAnnotations();
 
     this.registerDisposer(
       findPathState.triggerPathUpdate.add(() => {
@@ -3801,6 +3948,38 @@ void main() {
     );
     this.debugSession = this.registerDisposer(
       new CalcadaDebugSession(this, layer, state.calcadaDebugState),
+    );
+
+    // Debug is a mode, not a tool: it is meant to sit alongside whatever the
+    // proofreader is holding. Its key is bound as a plain action rather than
+    // through the tool binder for exactly that reason — activating a tool
+    // deactivates the current one, so routing it through a tool would drop the
+    // cut the moment the overlay was asked for.
+    this.registerDisposer(
+      registerActionListener(window, CALCADA_DEBUG_TOGGLE_ACTION, () => {
+        const { active } = state.calcadaDebugState;
+        active.value = !active.value;
+      }),
+    );
+
+    // Zetta Trace is a mode for the same reason and bound the same way. The
+    // stale-segmentation guard applies only to entering it: it exists to keep
+    // edits off an old state, and leaving a mode is not an edit — a trace
+    // started before the timestamp moved would otherwise be impossible to end.
+    this.registerDisposer(
+      registerActionListener(window, CALCADA_TRACE_TOGGLE_ACTION, () => {
+        const { active } = state.zettaTraceState;
+        if (!active.value) {
+          const { timestamp } = layer.displayState.segmentationGroupState.value;
+          if (timestamp.value !== undefined) {
+            StatusMessage.showTemporaryMessage(
+              "Editing can not be performed with a segmentation at an older state.",
+            );
+            return;
+          }
+        }
+        active.value = !active.value;
+      }),
     );
   }
 
@@ -4736,7 +4915,10 @@ async function withErrorMessageHTTP<T>(
   } catch (e) {
     if (e instanceof HttpError && e.response) {
       const { errorPrefix = "" } = options;
-      const msg = (await parseCalcadaError(e)) || "unknown error";
+      // Calcada answers {"code","error","message"} and leaves message empty on
+      // the general split, so parseCalcadaError — which reads only .message —
+      // reduces every one of its failures to "unknown error".
+      const msg = (await wrapCalcadaError(e)).message || "unknown error";
       if (!status) {
         status = new StatusMessage(true);
       }
@@ -5220,6 +5402,78 @@ class CalcadaGraphServerInterface {
     };
   }
 
+  /**
+   * Ask what the split would mark, without marking it.
+   *
+   * The first of the three steps a proofreader can drive by hand, and the only
+   * one that writes nothing. The carve recomputes these points rather than
+   * being handed them, so this is purely something to look at before deciding.
+   */
+  async generalSplitPoints(
+    points: {
+      color: "blue" | "red";
+      pieceId: bigint;
+      x: number;
+      y: number;
+      z: number;
+      origin: "2d" | "3d";
+    }[],
+    branchId: number,
+    useImage: boolean,
+  ): Promise<{
+    conflicted: bigint[];
+    artificialPoints: {
+      color: "blue" | "red";
+      pieceId: bigint;
+      voxel: [number, number, number];
+    }[];
+  }> {
+    const { fetchOkImpl, baseUrl } = this.httpSource;
+    let response: Response;
+    try {
+      response = await fetchOkImpl(
+        appendCoordParams(`${baseUrl}/split/general/points?int64_as_str=1`, {
+          branchId,
+        }),
+        {
+          method: "POST",
+          body: JSON.stringify({
+            points: points.map((p) => ({
+              color: p.color,
+              piece_id: p.pieceId.toString(),
+              x: p.x,
+              y: p.y,
+              z: p.z,
+              origin: p.origin,
+            })),
+            use_image: useImage,
+          }),
+        },
+      );
+    } catch (e) {
+      throw await wrapCalcadaError(e);
+    }
+    const jsonResp = await response.json();
+    return {
+      conflicted: (jsonResp.conflicted ?? []).map((x: string) =>
+        parseUint64(x),
+      ),
+      artificialPoints: (jsonResp.artificial_points ?? []).map(
+        (p: {
+          color: string;
+          piece_id: string;
+          x: number;
+          y: number;
+          z: number;
+        }) => ({
+          color: p.color === "red" ? ("red" as const) : ("blue" as const),
+          pieceId: parseUint64(p.piece_id),
+          voxel: [p.x, p.y, p.z] as [number, number, number],
+        }),
+      ),
+    };
+  }
+
   // revertOperation asks the backend to undo a prior edit (calcada-only). It
   // re-asserts the operation's pre-edit graph state and, for voxel-changing
   // splits, restores the branch-overlay voxels. Returns the restored roots so
@@ -5670,10 +5924,16 @@ export class CalcadaGraphSource extends SegmentationGraphSource {
     parent.style.display = "contents";
     const toolbox = document.createElement("div");
     toolbox.className = "neuroglancer-segmentation-toolbox";
-    parent.appendChild(
+    // Shared grid: each row's label and control become direct grid items
+    // (see calcada.css), so all three labels share one automatically-sized
+    // column and every control's input starts flush at the same left edge,
+    // instead of each row independently sizing its own label.
+    const layerControls = document.createElement("div");
+    layerControls.className = "neuroglancer-calcada-layer-controls";
+    layerControls.appendChild(
       addLayerControlToOptionsTab(tab, layer, tab.visibility, timeControl),
     );
-    parent.appendChild(
+    layerControls.appendChild(
       addLayerControlToOptionsTab(
         tab,
         layer,
@@ -5681,9 +5941,10 @@ export class CalcadaGraphSource extends SegmentationGraphSource {
         labeledTimestampControl,
       ),
     );
-    parent.appendChild(
+    layerControls.appendChild(
       addLayerControlToOptionsTab(tab, layer, tab.visibility, branchControl),
     );
+    parent.appendChild(layerControls);
     toolbox.appendChild(
       makeToolButton(context, layer.toolBinder, {
         toolJson: CALCADA_MULTICUT_SEGMENTS_TOOL_ID,
@@ -5943,7 +6204,14 @@ const CALCADA_MERGE_SEGMENTS_TOOL_ID = "calcadaMergeSegments";
 const CALCADA_FIND_PATH_TOOL_ID = "calcadaFindPath";
 const CALCADA_PIECE_SPLIT_TOOL_ID = "calcadaPieceSplit";
 const CALCADA_ZETTA_TRACE_TOOL_ID = "calcadaZettaTrace";
+const DEBUG_EDGE_COLOR_PROPERTY = "color";
+// Bound straight to a key like the debug toggle: both are modes that must
+// survive the proofreader picking up a tool.
+const CALCADA_TRACE_TOGGLE_ACTION = "calcada-toggle-zetta-trace";
 const CALCADA_DEBUG_TOOL_ID = "calcadaDebug";
+// Bound straight to a key in config/custom-keybinds.json, bypassing the tool
+// slot so toggling the overlay never puts down the tool in hand.
+const CALCADA_DEBUG_TOGGLE_ACTION = "calcada-toggle-debug-mode";
 
 class MulticutAnnotationLayerView extends AnnotationLayerView {
   declare private _annotationStates: MergedAnnotationStates;
@@ -6066,8 +6334,9 @@ const CALCADA_TIME_JSON_KEY = "grapheneTime";
 
 const timeControl = {
   label: "Time",
-  title: "View segmentation at earlier point of time",
+  title: TIMESTAMP_CONTROL_TITLE,
   toolJson: CALCADA_TIME_JSON_KEY,
+  noImplicitLabel: true,
   ...timeLayerControl(),
 };
 
@@ -6116,7 +6385,7 @@ function branchLayerControl(): LayerControlFactory<SegmentationUserLayer> {
 
 const branchControl = {
   label: "Branch",
-  title: "Calcada branch (0 = main)",
+  title: BRANCH_PICKER_TITLE,
   toolJson: CALCADA_BRANCH_JSON_KEY,
   noImplicitLabel: true,
   ...branchLayerControl(),
@@ -6216,18 +6485,13 @@ function timeLayerControl(): LayerControlFactory<SegmentationUserLayer> {
 
       const controlElement = document.createElement("div");
       controlElement.classList.add("neuroglancer-time-control");
-      const widget = context.registerDisposer(
-        new DateTimeInputWidget(
+      context.registerDisposer(
+        mountComponent(controlElement, CalcadaTimestampPicker, {
           intermediateTimestamp,
-          new Date(timestampLimit.value),
-          new Date(),
-        ),
+          timestampLimit,
+        }),
       );
-      timestampLimit.changed.add(() => {
-        widget.setMin(new Date(timestampLimit.value));
-      });
-      controlElement.appendChild(widget.element);
-      return { controlElement, control: widget };
+      return { controlElement, control: controlElement };
     },
     activateTool: (_activation) => {},
   };
@@ -7134,6 +7398,20 @@ async function wrapCalcadaError(e: unknown): Promise<Error> {
 // voxel coordinates using the graph's resolution. Both arrays are expected
 // to be in the conventional (x, y, z) order. The conversion truncates toward
 // zero — matching the integer-division semantics the merge handler documents.
+// voxelToLayerPoint is the inverse of layerPointToVoxel: the server answers in
+// voxels and the annotation layer draws in layer space.
+function voxelToLayerPoint(
+  voxel: VoxelPoint,
+  annotationToNanometers: Float64Array,
+  graphResolution: [number, number, number],
+): [number, number, number] {
+  return [
+    (voxel[0] * graphResolution[0]) / annotationToNanometers[0],
+    (voxel[1] * graphResolution[1]) / annotationToNanometers[1],
+    (voxel[2] * graphResolution[2]) / annotationToNanometers[2],
+  ];
+}
+
 function layerPointToVoxel(
   layerPoint: Float32Array,
   annotationToNanometers: Float64Array,
@@ -7177,6 +7455,10 @@ class PieceSplitTool extends LayerTool<SegmentationUserLayer> {
     const {
       state: { pieceSplitState },
     } = graphConnection;
+    pieceSplitState.active.value = true;
+    activation.registerDisposer(() => {
+      pieceSplitState.active.value = false;
+    });
 
     const { body, header } =
       makeToolActivationStatusMessageWithHeader(activation);
@@ -7200,15 +7482,6 @@ class PieceSplitTool extends LayerTool<SegmentationUserLayer> {
 
     // Result of a stepped split's first half, held until the second runs. Cleared
     // whenever the points change, since it names sub-pieces derived from them.
-    let steppedSplit:
-      | {
-          sources: bigint[];
-          sinks: bigint[];
-          branchId: number;
-          rootId?: bigint;
-        }
-      | undefined;
-
     // The debug overlay is its own mode now (CalcadaDebugSession). A split
     // rewrites the very piece ids it is drawing, so tell it to re-read rather
     // than leaving stale ids on screen.
@@ -7248,6 +7521,12 @@ class PieceSplitTool extends LayerTool<SegmentationUserLayer> {
       displayState.tempSegmentStatedColors2d.value.clear();
       displayState.tempSegmentDefaultColor2d.value = undefined;
     };
+    // Putting the tool down must put the temporary segment state back. Leaving
+    // useTemporarySegmentEquivalences on with an empty map un-merges the
+    // segment: every piece then renders as its own object in its own colour,
+    // with the cut tool closed and nothing on screen to explain it.
+    activation.registerDisposer(() => resetPieceSplitDisplay());
+
     const updatePieceSplitDisplay = () => {
       if (graphConnection.state.calcadaDebugState.active.value) return;
       resetPieceSplitDisplay();
@@ -7297,6 +7576,7 @@ class PieceSplitTool extends LayerTool<SegmentationUserLayer> {
       }
       segmentationGroupState.useTemporarySegmentEquivalences.value = true;
       let anyTint = false;
+      let anyLink = false;
       for (const piece of segmentationGroupState.segmentEquivalences.setElements(
         focus,
       )) {
@@ -7322,12 +7602,21 @@ class PieceSplitTool extends LayerTool<SegmentationUserLayer> {
             SPLIT_TARGET_COLOR_PACKED,
           );
           anyTint = true;
-        } else {
+        } else if (piece !== focus) {
           segmentationGroupState.temporarySegmentEquivalences.link(
             focus,
             piece,
           );
+          anyLink = true;
         }
+      }
+      if (!anyTint && !anyLink) {
+        // The focus names nothing live any more — a split superseded it, and
+        // its pieces are gone. Temporary equivalences left on with nothing in
+        // them un-merge the segment: every piece renders as its own object in
+        // its own colour, with no tool open to explain it.
+        resetPieceSplitDisplay();
+        return;
       }
       displayState.useTempSegmentStatedColors2d.value = anyTint;
     };
@@ -7337,6 +7626,45 @@ class PieceSplitTool extends LayerTool<SegmentationUserLayer> {
       displayState.baseSegmentHighlighting.value = priorBaseSegmentHighlighting;
       displayState.highlightColor.value = priorHighlightColor;
     });
+    // A cut belongs to the segment its points were placed on. Once that segment
+    // is hidden or deselected the points describe something the proofreader can
+    // no longer see, and the display override that forces its pieces on screen
+    // would also stop a double-click from ever hiding it. Drop them instead —
+    // on entry, so reopening the tool after deselecting starts clean, and while
+    // open, so hiding the segment takes effect immediately.
+    // What step 2 wrote, which step 3 cuts. Client-side because each step is
+    // its own committed edit: there is no session on the server to hold it.
+    let carved:
+      | {
+          sources: bigint[];
+          sinks: bigint[];
+          branchId: number;
+          rootId?: bigint;
+        }
+      | undefined;
+    let stepStage = 0;
+    // Set by a finished split, cleared by Clear: says the points on screen are
+    // a record of a split that ran, not a request for one still to come.
+    let pointsOutliveSplit = false;
+
+    const dropPointsIfFocusGone = () => {
+      // A carve that has run supersedes the very pieces the points name, so the
+      // focus stops resolving. Dropping them then would throw away the split
+      // between step 2 and step 3, which is exactly when it is needed.
+      if (carved !== undefined) return;
+      // Likewise once a split has finished: the segment it named is gone by
+      // design, and the points are being kept to judge the result by.
+      if (pointsOutliveSplit) return;
+      const focus = currentFocusRoot();
+      if (focus === undefined) return;
+      if (segmentationGroupState.visibleSegments.has(focus)) return;
+      pieceSplitState.reset();
+    };
+    dropPointsIfFocusGone();
+    activation.registerDisposer(
+      segmentationGroupState.visibleSegments.changed.add(dropPointsIfFocusGone),
+    );
+
     activation.registerDisposer(
       pieceSplitState.changed.add(updatePieceSplitDisplay),
     );
@@ -7364,28 +7692,26 @@ class PieceSplitTool extends LayerTool<SegmentationUserLayer> {
       title: "Toggle blue/red (G)",
       onClick: () => pieceSplitState.swapGroup(),
     });
+    // The one place points are removed. They outlive the split on purpose: the
+    // proofreader compares the cut against the points that asked for it, and
+    // that comparison is impossible if placing the cut also wipes them.
+    const clearPoints = () => {
+      pointsOutliveSplit = false;
+      carved = undefined;
+      stepStage = 0;
+      pieceSplitState.reset();
+      stageStatus.textContent = "";
+      renderStages();
+    };
     const clearButton = makeIcon({
       text: "Clear",
-      title: "Remove all points and reset the focus piece",
-      onClick: () => {
-        pieceSplitState.reset();
-      },
+      title: "Remove all points, placed and added, and reset the focus piece",
+      onClick: clearPoints,
     });
-    // The split in two halves, for inspecting the graph between them: the first
-    // writes the sub-pieces and their edges but leaves the segment whole, the
-    // second runs the ordinary multicut over what the first produced. Enter
-    // triggers whichever step is next.
-    const splitPiecesButton = makeIcon({
-      text: "1. Pieces",
-      title:
-        "Step 1: split the pieces and add their edges, keeping one segment (inspect with Debug). Enter runs this while step 2 is not available.",
-      onClick: () => void runSplitPieces(),
-    });
-    const cutButton = makeIcon({
-      text: "2. Cut",
-      title:
-        "Step 2: run the regular multicut over the pieces from step 1. Enter runs this once step 1 is done.",
-      onClick: () => void runCut(),
+    const applyButton = makeIcon({
+      text: "Apply",
+      title: "Run the split (Enter). Advanced mode steps it stage by stage.",
+      onClick: () => void runFullSplit(),
     });
     const undoButton = makeIcon({
       text: "Undo",
@@ -7394,8 +7720,7 @@ class PieceSplitTool extends LayerTool<SegmentationUserLayer> {
     });
     actions.appendChild(swapButton);
     actions.appendChild(clearButton);
-    actions.appendChild(splitPiecesButton);
-    actions.appendChild(cutButton);
+    actions.appendChild(applyButton);
     actions.appendChild(undoButton);
     const spinner = document.createElement("div");
     spinner.className = "piece-split-spinner";
@@ -7417,15 +7742,90 @@ class PieceSplitTool extends LayerTool<SegmentationUserLayer> {
     useImageLabel.appendChild(document.createTextNode("Use image for cut"));
     body.appendChild(useImageLabel);
 
+    const advancedCheckbox = document.createElement("input");
+    advancedCheckbox.type = "checkbox";
+    advancedCheckbox.checked = pieceSplitState.advanced.value;
+    advancedCheckbox.addEventListener("change", () => {
+      pieceSplitState.advanced.value = advancedCheckbox.checked;
+    });
+    const advancedLabel = document.createElement("label");
+    advancedLabel.className = "piece-split-use-image";
+    advancedLabel.title =
+      "Run the split one stage at a time and commit whichever stage gave you " +
+      "what you wanted, instead of whatever the whole pipeline reaches.";
+    advancedLabel.appendChild(advancedCheckbox);
+    advancedLabel.appendChild(document.createTextNode("Advanced: step stages"));
+    body.appendChild(advancedLabel);
+
+    // Advanced mode: one button per stage the server can stop after, plus the
+    // commit. The session lives only as long as the tool is open.
+    const stagesRow = document.createElement("div");
+    stagesRow.className = "piece-split-actions";
+    body.appendChild(stagesRow);
+    const stageStatus = document.createElement("div");
+    stageStatus.className = "piece-split-focus";
+    body.appendChild(stageStatus);
+
+    const stageButtons = panelStages().map((stage) => {
+      const button = makeIcon({
+        text: `${stage.wave}. ${stage.label}`,
+        title: stage.title,
+        onClick: () => runStageByWave(stage.wave),
+      });
+      stagesRow.appendChild(button);
+      return { stage, button };
+    });
+
     let busy = false;
     const setStepButtonsEnabled = (enabled: boolean) => {
-      splitPiecesButton.classList.toggle("disabled", busy || !enabled);
-      // Step 2 only means anything once step 1 has produced pieces to cut.
-      cutButton.classList.toggle(
-        "disabled",
-        busy || steppedSplit === undefined,
-      );
+      applyButton.classList.toggle("disabled", busy || !enabled);
     };
+    // The stage row exists only in advanced mode, and a stage already behind the
+    // session is a rewind rather than a re-run — the server serves it from the
+    // snapshot it stored, so it costs nothing and says so.
+    const renderStages = () => {
+      const on = pieceSplitState.advanced.value;
+      advancedCheckbox.checked = on;
+      stagesRow.style.display = on ? "" : "none";
+      stageStatus.style.display =
+        on && stageStatus.textContent !== "" ? "" : "none";
+      const reached = stepStage;
+      const hasSomethingToClear =
+        pieceSplitState.bluePoints.value.length > 0 ||
+        pieceSplitState.redPoints.value.length > 0 ||
+        pieceSplitState.artificialPoints.value.length > 0 ||
+        reached > 0;
+      for (const { stage, button } of stageButtons) {
+        const allowed = stageEnabled(stage.wave, reached, hasSomethingToClear);
+        button.classList.toggle("disabled", busy || !allowed);
+        const blocked = stageBlockedReason(stage.wave, reached);
+        button.title =
+          allowed || blocked === undefined
+            ? stage.title
+            : `${stage.title} — ${blocked}`;
+      }
+    };
+
+    // Editing the points describes a different split, so the session that was
+    // stepping the old ones is no longer about anything: continuing it would
+    // replay the points the session started with, not the ones on screen.
+    // Editing the points describes a different split, so what step 1 showed and
+    // what step 2 handed to step 3 no longer say anything true.
+    const dropStepSession = () => {
+      if (stepStage === 0 && carved === undefined) return;
+      carved = undefined;
+      stepStage = 0;
+      pieceSplitState.artificialPoints.value = [];
+      stageStatus.textContent = "";
+      renderStages();
+    };
+    activation.registerDisposer(
+      pieceSplitState.bluePoints.changed.add(dropStepSession),
+    );
+    activation.registerDisposer(
+      pieceSplitState.redPoints.changed.add(dropStepSession),
+    );
+
     const setUndoEnabled = () => {
       // Disabled until there is at least one edit to revert (point 3).
       undoButton.classList.toggle(
@@ -7437,19 +7837,15 @@ class PieceSplitTool extends LayerTool<SegmentationUserLayer> {
       busy = nextBusy;
       spinner.style.display = busy ? "" : "none";
       useImageCheckbox.disabled = busy;
-      for (const button of [
-        swapButton,
-        clearButton,
-        splitPiecesButton,
-        cutButton,
-        undoButton,
-      ]) {
+      for (const button of [swapButton, clearButton, applyButton, undoButton]) {
         button.classList.toggle("disabled", busy);
       }
+      renderStages();
       if (!busy) render();
     };
 
     const render = () => {
+      renderStages();
       // Focus piece label.
       const focus = currentFocusRoot();
       focusRow.textContent =
@@ -7508,7 +7904,7 @@ class PieceSplitTool extends LayerTool<SegmentationUserLayer> {
       );
 
       useImageCheckbox.checked = pieceSplitState.useImage.value;
-      // Step 1 is enabled once both colours have at least one point.
+      // Applying needs at least one point of each colour.
       setStepButtonsEnabled(
         pieceSplitState.bluePoints.value.length > 0 &&
           pieceSplitState.redPoints.value.length > 0,
@@ -7520,9 +7916,6 @@ class PieceSplitTool extends LayerTool<SegmentationUserLayer> {
 
     // --- Actions ---
     const runUndo = async () => {
-      // An undo may take step 1's sub-pieces back out of the graph, so the
-      // pending cut no longer refers to anything.
-      steppedSplit = undefined;
       if (busy) return;
       if (!graphConnection.canUndo()) {
         StatusMessage.showTemporaryMessage("Nothing to undo", 2500);
@@ -7540,11 +7933,16 @@ class PieceSplitTool extends LayerTool<SegmentationUserLayer> {
     // Step 1: cut every multi-colour piece and write the edges its halves inherit,
     // but leave everything in one segment. What the multicut will act on is then
     // in the graph and can be looked at with Debug before anything is separated.
-    const runSplitPieces = async () => {
-      if (
-        pieceSplitState.bluePoints.value.length === 0 ||
-        pieceSplitState.redPoints.value.length === 0
-      ) {
+
+    // Step 2: the ordinary multicut, over the pieces step 1 left behind.
+    // Normal mode: the whole split in one call. The two-step Pieces/Cut pair it
+    // replaces existed to make the intermediate graph inspectable, which is
+    // what advanced mode now does properly.
+    const runFullSplit = async () => {
+      if (busy) return;
+      const blue = pieceSplitState.bluePoints.value;
+      const red = pieceSplitState.redPoints.value;
+      if (blue.length === 0 || red.length === 0) {
         StatusMessage.showTemporaryMessage(
           "Place at least one blue and one red point",
           5000,
@@ -7553,6 +7951,7 @@ class PieceSplitTool extends LayerTool<SegmentationUserLayer> {
       }
       setBusy(true);
       const branchId = graphConnection.graph.branchId.value;
+      const oldRoot = currentFocusRoot();
       try {
         const toPayload = (p: PointEntry, color: "blue" | "red") => ({
           color,
@@ -7562,10 +7961,139 @@ class PieceSplitTool extends LayerTool<SegmentationUserLayer> {
           z: p.voxel[2],
           origin: p.origin,
         });
-        const points = [
-          ...pieceSplitState.bluePoints.value.map((p) => toPayload(p, "blue")),
-          ...pieceSplitState.redPoints.value.map((p) => toPayload(p, "red")),
-        ];
+        const { roots, components, operationId } =
+          await graphConnection.graph.graphServer.generalSplit(
+            [
+              ...blue.map((p) => toPayload(p, "blue")),
+              ...red.map((p) => toPayload(p, "red")),
+            ],
+            branchId,
+            false,
+            pieceSplitState.useImage.value,
+          );
+        const newRoots = roots.filter((root) => root !== 0n);
+        if (newRoots.length === 0) {
+          StatusMessage.showTemporaryMessage("No split found.", 3000);
+          return;
+        }
+        graphConnection.pushUndo(operationId, branchId);
+        if (oldRoot !== undefined) {
+          graphConnection.updateAfterSplit(oldRoot, newRoots, components);
+          graphConnection.meshAddNewSegments(newRoots);
+          const oldRootSet = new Uint64Set();
+          oldRootSet.add(oldRoot);
+          const newRootSet = new Uint64Set();
+          newRootSet.add(newRoots);
+          graphConnection.notifyGraphEdited(oldRootSet, newRootSet);
+        } else {
+          const segmentsState = layer.displayState.segmentationGroupState.value;
+          for (const newRoot of newRoots) {
+            segmentsState.selectedSegments.add(newRoot);
+            segmentsState.visibleSegments.add(newRoot);
+          }
+          graphConnection.meshAddNewSegments(newRoots);
+        }
+        refreshDebugOverlay();
+        pointsOutliveSplit = true;
+        renderStages();
+        StatusMessage.showTemporaryMessage(
+          `Separated into ${newRoots.length} root(s). The points stay up for comparison — Clear removes them. Ctrl+Z undoes the split.`,
+          6000,
+        );
+      } catch (e: unknown) {
+        StatusMessage.showTemporaryMessage(
+          `Split failed: ${e instanceof Error ? e.message : String(e)}`,
+          8000,
+        );
+      } finally {
+        setBusy(false);
+      }
+    };
+
+    // Advanced mode drives the split by hand in three steps. The first only
+    // looks; the two after it are ordinary edits, each undoable on its own.
+    const toPayload = (p: PointEntry, color: "blue" | "red") => ({
+      color,
+      pieceId: p.pieceId,
+      x: p.voxel[0],
+      y: p.voxel[1],
+      z: p.voxel[2],
+      origin: p.origin,
+    });
+    const placedPoints = () => {
+      const blue = pieceSplitState.bluePoints.value;
+      const red = pieceSplitState.redPoints.value;
+      if (blue.length === 0 || red.length === 0) {
+        StatusMessage.showTemporaryMessage(
+          "Place at least one blue and one red point",
+          5000,
+        );
+        return undefined;
+      }
+      return [
+        ...blue.map((p) => toPayload(p, "blue")),
+        ...red.map((p) => toPayload(p, "red")),
+      ];
+    };
+
+    // Step 1: show the points the split would place, and the pieces it would
+    // carve because of them. Writes nothing.
+    const runPointsStep = async () => {
+      if (busy) return;
+      const points = placedPoints();
+      if (points === undefined) return;
+      setBusy(true);
+      const branchId = graphConnection.graph.branchId.value;
+      try {
+        const { conflicted, artificialPoints } =
+          await graphConnection.graph.graphServer.generalSplitPoints(
+            points,
+            branchId,
+            pieceSplitState.useImage.value,
+          );
+        const loadedSubsource = getGraphLoadedSubsource(layer)!;
+        const annotationToNanometers = new Float64Array(
+          loadedSubsource.loadedDataSource.transform.inputSpace.value.scales.map(
+            (x: number) => x / 1e-9,
+          ),
+        );
+        const graphResolution = graphConnection.graph.info.scales[0]
+          .resolution as unknown as [number, number, number];
+        pieceSplitState.artificialPoints.value = artificialPoints.map((p) => ({
+          voxel: p.voxel,
+          layer: voxelToLayerPoint(
+            p.voxel,
+            annotationToNanometers,
+            graphResolution,
+          ),
+          pieceId: p.pieceId,
+          origin: "3d" as const,
+          artificialColor: p.color,
+        }));
+        stageStatus.textContent =
+          artificialPoints.length === 0
+            ? "No extra points needed — the cut can run on the pieces as they are."
+            : `${artificialPoints.length} point(s) added on ${conflicted.length} piece(s) that both sides run through. Nothing written yet.`;
+        stepStage = 1;
+      } catch (e: unknown) {
+        stageStatus.textContent = `Step 1 failed: ${e instanceof Error ? e.message : String(e)}`;
+        StatusMessage.showTemporaryMessage(stageStatus.textContent, 8000);
+      } finally {
+        setBusy(false);
+      }
+    };
+
+    // Step 2: carve every piece holding both colours. This writes: the
+    // sub-pieces and their edges are persisted and the segment stays whole, so
+    // Debug shows the graph the cut will run over.
+    const runCarveStep = async () => {
+      if (busy) return;
+      const points = placedPoints();
+      if (points === undefined) return;
+      setBusy(true);
+      const branchId = graphConnection.graph.branchId.value;
+      const focus = currentFocusRoot();
+      try {
         const { roots, components, operationId, splitPieces } =
           await graphConnection.graph.graphServer.generalSplit(
             points,
@@ -7575,9 +8103,9 @@ class PieceSplitTool extends LayerTool<SegmentationUserLayer> {
           );
         graphConnection.pushUndo(operationId, branchId);
 
-        // Name the two sides for step 2. A piece that was split contributes its
-        // blue half to the sources and its red half to the sinks; a piece holding
-        // only one colour is untouched and stands for itself.
+        // Name the two sides for step 3. A piece that was carved contributes
+        // its blue half to the sources and its red half to the sinks; a piece
+        // holding only one colour stands for itself.
         const wasSplit = new Set(splitPieces.map((sp) => sp.old));
         const sources = new Set<bigint>();
         const sinks = new Set<bigint>();
@@ -7591,28 +8119,39 @@ class PieceSplitTool extends LayerTool<SegmentationUserLayer> {
         for (const p of pieceSplitState.redPoints.value) {
           if (!wasSplit.has(p.pieceId)) sinks.add(p.pieceId);
         }
-        // The segment stays whole but its pieces changed, so the piece->root
-        // mapping is stale.
         const newRoots = roots.filter((root) => root !== 0n);
-
-        steppedSplit = {
+        // Set BEFORE the notifications below. They supersede the pieces the
+        // points name, and the guard that drops points when their segment goes
+        // away runs in between; with this still unset it would take the points
+        // — and the handoff to step 3 — with it.
+        carved = {
           sources: [...sources],
           sinks: [...sinks],
           branchId,
-          // Step 1 keeps the segment whole, so it reports exactly one root; hold
-          // it so Debug inspects the post-split graph rather than resolving the
-          // now-superseded pieces the points still name.
+          // The carve keeps the segment whole, so it reports exactly one root.
+          // Hold it: the old one is superseded, and asking Debug about a root
+          // that no longer has pieces is a 404 rather than a graph.
           rootId: newRoots.length === 1 ? newRoots[0] : undefined,
         };
-
-        const focus = currentFocusRoot();
         if (newRoots.length > 0 && focus !== undefined) {
-          // Split-mode 2D renders raw piece ids through segmentEquivalences, so
-          // the links must follow the edit. With pieces_only the segment stays
-          // whole, so the response carries one component holding the new root's
-          // complete piece list — authoritative where the local reconstruction
-          // was only as fresh as the last chunk fetch.
-          graphConnection.updateAfterSplit(focus, newRoots, components);
+          // A carve rewrites voxels: every parent it split is superseded and its
+          // id replaced in storage by the two halves. The chunks already decoded
+          // in the browser still carry the parent id, and it belongs to no group
+          // in the response — which is why the segment vanished from the 2D view
+          // while the meshes, rebuilt from the response, stayed. Carrying the
+          // superseded parents into the group keeps those cached chunks
+          // resolving until they are re-fetched. Safe precisely here: a carve
+          // leaves the segment whole, so both halves of every parent are in the
+          // one root, and so is the parent.
+          const carveComponents =
+            newRoots.length === 1
+              ? [[...(components[0] ?? []), ...splitPieces.map((sp) => sp.old)]]
+              : components;
+          // The segment stays whole but its pieces changed, so the piece to
+          // root mapping is stale. The response carries the new root's complete
+          // piece list, which is authoritative where the local reconstruction
+          // is only as fresh as the last chunk fetch.
+          graphConnection.updateAfterSplit(focus, newRoots, carveComponents);
           graphConnection.meshAddNewSegments(newRoots);
           const oldRootSet = new Uint64Set();
           oldRootSet.add(focus);
@@ -7621,30 +8160,26 @@ class PieceSplitTool extends LayerTool<SegmentationUserLayer> {
           graphConnection.notifyGraphEdited(oldRootSet, newRootSet);
         }
         refreshDebugOverlay();
-        StatusMessage.showTemporaryMessage(
-          `Step 1 done — ${splitPieces.length} piece(s) split, segment still whole. ` +
-            `Press Debug to inspect the edges, then "2. Cut".`,
-          8000,
-        );
-        render();
+        stepStage = 2;
+        renderStages();
+        stageStatus.textContent = `Carved ${splitPieces.length} piece(s). Written — press 3 to cut, or Ctrl+Z to undo.`;
       } catch (e: unknown) {
-        StatusMessage.showTemporaryMessage(
-          `Step 1 failed: ${e instanceof Error ? e.message : String(e)}`,
-          8000,
-        );
+        stageStatus.textContent = `Step 2 failed: ${e instanceof Error ? e.message : String(e)}`;
+        StatusMessage.showTemporaryMessage(stageStatus.textContent, 8000);
       } finally {
         setBusy(false);
       }
     };
 
-    // Step 2: the ordinary multicut, over the pieces step 1 left behind.
-    const runCut = async () => {
-      if (steppedSplit === undefined) {
-        StatusMessage.showTemporaryMessage('Run "1. Pieces" first', 5000);
+    // Step 3: the multicut over what step 2 wrote.
+    const runCutStep = async () => {
+      if (busy) return;
+      if (carved === undefined) {
+        StatusMessage.showTemporaryMessage("Run step 2 first", 5000);
         return;
       }
       setBusy(true);
-      const { sources, sinks, branchId, rootId } = steppedSplit;
+      const { sources, sinks, branchId, rootId } = carved;
       try {
         const { roots, components, operationId } =
           await graphConnection.graph.graphServer.splitByPieces(
@@ -7663,13 +8198,8 @@ class PieceSplitTool extends LayerTool<SegmentationUserLayer> {
           segmentsState.selectedSegments.delete(piece);
           segmentsState.visibleSegments.delete(piece);
         }
-        // The post-pieces root is superseded by the two cut roots. rootId is
-        // the authoritative handle (currentFocusRoot maps the first point's
-        // piece, which the pieces step already retired).
         const oldRoot = rootId ?? currentFocusRoot();
         if (oldRoot !== undefined) {
-          // Reconcile from the server's authoritative components instead of
-          // re-fetching chunks and waiting out the lagging LUT.
           graphConnection.updateAfterSplit(oldRoot, newRoots, components);
           graphConnection.meshAddNewSegments(newRoots);
           const oldRootSet = new Uint64Set();
@@ -7685,20 +8215,35 @@ class PieceSplitTool extends LayerTool<SegmentationUserLayer> {
           graphConnection.meshAddNewSegments(newRoots);
         }
         refreshDebugOverlay();
-        steppedSplit = undefined;
-        pieceSplitState.reset();
-        StatusMessage.showTemporaryMessage(
-          `Step 2 done — separated into ${newRoots.length} root(s). Press Ctrl+Z to undo.`,
-          6000,
-        );
+        carved = undefined;
+        stepStage = 3;
+        pointsOutliveSplit = true;
+        renderStages();
+        stageStatus.textContent = `Separated into ${newRoots.length} root(s). Points stay up for comparison — step 4 clears them. Ctrl+Z undoes the cut, again undoes the carve.`;
       } catch (e: unknown) {
-        StatusMessage.showTemporaryMessage(
-          `Step 2 failed: ${e instanceof Error ? e.message : String(e)}`,
-          8000,
-        );
+        stageStatus.textContent = `Step 3 failed: ${e instanceof Error ? e.message : String(e)}`;
+        StatusMessage.showTemporaryMessage(stageStatus.textContent, 8000);
       } finally {
         setBusy(false);
       }
+    };
+
+    const runStageByWave = (wave: number) => {
+      // The buttons are disabled out of turn, but Enter and the keyboard reach
+      // here too, so the order is enforced where it is decided, not only where
+      // it is drawn.
+      if (!stageEnabled(wave, stepStage, true)) {
+        const blocked = stageBlockedReason(wave, stepStage);
+        if (blocked !== undefined) {
+          stageStatus.textContent = blocked;
+          renderStages();
+        }
+        return;
+      }
+      if (wave === 1) return void runPointsStep();
+      if (wave === 2) return void runCarveStep();
+      if (wave === 3) return void runCutStep();
+      return clearPoints();
     };
 
     // --- Click placement ---
@@ -7783,14 +8328,14 @@ class PieceSplitTool extends LayerTool<SegmentationUserLayer> {
       event.stopPropagation();
       pieceSplitState.swapGroup();
     });
-    // Enter runs whichever step is next: the multicut once step 1 has produced
-    // pieces to cut, the piece split otherwise.
+    // Enter applies whichever mode is showing: the stage the session stopped at
+    // in advanced mode, the whole split otherwise.
     activation.bindAction("apply", (event) => {
       event.stopPropagation();
-      if (steppedSplit !== undefined) {
-        void runCut();
+      if (pieceSplitState.advanced.value) {
+        runStageByWave(stepStage + 1);
       } else {
-        void runSplitPieces();
+        void runFullSplit();
       }
     });
     activation.bindAction("undo", (event) => {
