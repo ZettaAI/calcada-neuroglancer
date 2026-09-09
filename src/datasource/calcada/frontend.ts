@@ -96,8 +96,9 @@ import {
   isStaleRoot,
 } from "#src/datasource/calcada/root_resolution.js";
 import {
-  stageAction,
-  stoppableStages,
+  panelStages,
+  stageBlockedReason,
+  stageEnabled,
 } from "#src/datasource/calcada/split_steps.js";
 import { createSerialRunner } from "#src/datasource/calcada/undo_serialization.js";
 import type {
@@ -7644,12 +7645,18 @@ class PieceSplitTool extends LayerTool<SegmentationUserLayer> {
         }
       | undefined;
     let stepStage = 0;
+    // Set by a finished split, cleared by Clear: says the points on screen are
+    // a record of a split that ran, not a request for one still to come.
+    let pointsOutliveSplit = false;
 
     const dropPointsIfFocusGone = () => {
       // A carve that has run supersedes the very pieces the points name, so the
       // focus stops resolving. Dropping them then would throw away the split
       // between step 2 and step 3, which is exactly when it is needed.
       if (carved !== undefined) return;
+      // Likewise once a split has finished: the segment it named is gone by
+      // design, and the points are being kept to judge the result by.
+      if (pointsOutliveSplit) return;
       const focus = currentFocusRoot();
       if (focus === undefined) return;
       if (segmentationGroupState.visibleSegments.has(focus)) return;
@@ -7687,12 +7694,21 @@ class PieceSplitTool extends LayerTool<SegmentationUserLayer> {
       title: "Toggle blue/red (G)",
       onClick: () => pieceSplitState.swapGroup(),
     });
+    // The one place points are removed. They outlive the split on purpose: the
+    // proofreader compares the cut against the points that asked for it, and
+    // that comparison is impossible if placing the cut also wipes them.
+    const clearPoints = () => {
+      pointsOutliveSplit = false;
+      carved = undefined;
+      stepStage = 0;
+      pieceSplitState.reset();
+      stageStatus.textContent = "";
+      renderStages();
+    };
     const clearButton = makeIcon({
       text: "Clear",
-      title: "Remove all points and reset the focus piece",
-      onClick: () => {
-        pieceSplitState.reset();
-      },
+      title: "Remove all points, placed and added, and reset the focus piece",
+      onClick: clearPoints,
     });
     const applyButton = makeIcon({
       text: "Apply",
@@ -7752,7 +7768,7 @@ class PieceSplitTool extends LayerTool<SegmentationUserLayer> {
     stageStatus.className = "piece-split-focus";
     body.appendChild(stageStatus);
 
-    const stageButtons = stoppableStages().map((stage) => {
+    const stageButtons = panelStages().map((stage) => {
       const button = makeIcon({
         text: `${stage.wave}. ${stage.label}`,
         title: stage.title,
@@ -7776,12 +7792,19 @@ class PieceSplitTool extends LayerTool<SegmentationUserLayer> {
       stageStatus.style.display =
         on && stageStatus.textContent !== "" ? "" : "none";
       const reached = stepStage;
+      const hasSomethingToClear =
+        pieceSplitState.bluePoints.value.length > 0 ||
+        pieceSplitState.redPoints.value.length > 0 ||
+        pieceSplitState.artificialPoints.value.length > 0 ||
+        reached > 0;
       for (const { stage, button } of stageButtons) {
-        button.classList.toggle("disabled", busy);
+        const allowed = stageEnabled(stage.wave, reached, hasSomethingToClear);
+        button.classList.toggle("disabled", busy || !allowed);
+        const blocked = stageBlockedReason(stage.wave, reached);
         button.title =
-          stageAction(stage.wave, reached) === "rewind"
-            ? `${stage.title} (already run — shows the stored result)`
-            : stage.title;
+          allowed || blocked === undefined
+            ? stage.title
+            : `${stage.title} — ${blocked}`;
       }
     };
 
@@ -7973,9 +7996,10 @@ class PieceSplitTool extends LayerTool<SegmentationUserLayer> {
           graphConnection.meshAddNewSegments(newRoots);
         }
         refreshDebugOverlay();
-        pieceSplitState.reset();
+        pointsOutliveSplit = true;
+        renderStages();
         StatusMessage.showTemporaryMessage(
-          `Separated into ${newRoots.length} root(s). Press Ctrl+Z to undo.`,
+          `Separated into ${newRoots.length} root(s). The points stay up for comparison — Clear removes them. Ctrl+Z undoes the split.`,
           6000,
         );
       } catch (e: unknown) {
@@ -8098,22 +8122,10 @@ class PieceSplitTool extends LayerTool<SegmentationUserLayer> {
           if (!wasSplit.has(p.pieceId)) sinks.add(p.pieceId);
         }
         const newRoots = roots.filter((root) => root !== 0n);
-        if (newRoots.length > 0 && focus !== undefined) {
-          // The segment stays whole but its pieces changed, so the piece to
-          // root mapping is stale. The response carries the new root's complete
-          // piece list, which is authoritative where the local reconstruction
-          // is only as fresh as the last chunk fetch.
-          graphConnection.updateAfterSplit(focus, newRoots, components);
-          graphConnection.meshAddNewSegments(newRoots);
-          const oldRootSet = new Uint64Set();
-          oldRootSet.add(focus);
-          const newRootSet = new Uint64Set();
-          newRootSet.add(newRoots);
-          graphConnection.notifyGraphEdited(oldRootSet, newRootSet);
-        }
-        refreshDebugOverlay();
-        // Set last: the notifications above supersede the pieces the points name,
-        // and the guards that watch for a segment going away run in between.
+        // Set BEFORE the notifications below. They supersede the pieces the
+        // points name, and the guard that drops points when their segment goes
+        // away runs in between; with this still unset it would take the points
+        // — and the handoff to step 3 — with it.
         carved = {
           sources: [...sources],
           sinks: [...sinks],
@@ -8123,6 +8135,33 @@ class PieceSplitTool extends LayerTool<SegmentationUserLayer> {
           // that no longer has pieces is a 404 rather than a graph.
           rootId: newRoots.length === 1 ? newRoots[0] : undefined,
         };
+        if (newRoots.length > 0 && focus !== undefined) {
+          // A carve rewrites voxels: every parent it split is superseded and its
+          // id replaced in storage by the two halves. The chunks already decoded
+          // in the browser still carry the parent id, and it belongs to no group
+          // in the response — which is why the segment vanished from the 2D view
+          // while the meshes, rebuilt from the response, stayed. Carrying the
+          // superseded parents into the group keeps those cached chunks
+          // resolving until they are re-fetched. Safe precisely here: a carve
+          // leaves the segment whole, so both halves of every parent are in the
+          // one root, and so is the parent.
+          const carveComponents =
+            newRoots.length === 1
+              ? [[...(components[0] ?? []), ...splitPieces.map((sp) => sp.old)]]
+              : components;
+          // The segment stays whole but its pieces changed, so the piece to
+          // root mapping is stale. The response carries the new root's complete
+          // piece list, which is authoritative where the local reconstruction
+          // is only as fresh as the last chunk fetch.
+          graphConnection.updateAfterSplit(focus, newRoots, carveComponents);
+          graphConnection.meshAddNewSegments(newRoots);
+          const oldRootSet = new Uint64Set();
+          oldRootSet.add(focus);
+          const newRootSet = new Uint64Set();
+          newRootSet.add(newRoots);
+          graphConnection.notifyGraphEdited(oldRootSet, newRootSet);
+        }
+        refreshDebugOverlay();
         stepStage = 2;
         renderStages();
         stageStatus.textContent = `Carved ${splitPieces.length} piece(s). Written — press 3 to cut, or Ctrl+Z to undo.`;
@@ -8180,14 +8219,9 @@ class PieceSplitTool extends LayerTool<SegmentationUserLayer> {
         refreshDebugOverlay();
         carved = undefined;
         stepStage = 3;
-        // Advanced mode keeps the points on screen after the cut: they are the
-        // record of what was asked for, and the whole reason to step is to see
-        // what each stage did to them. Clear is one keystroke away.
-        if (!pieceSplitState.advanced.value) {
-          pieceSplitState.reset();
-        }
+        pointsOutliveSplit = true;
         renderStages();
-        stageStatus.textContent = `Separated into ${newRoots.length} root(s). Ctrl+Z undoes the cut, again undoes the carve.`;
+        stageStatus.textContent = `Separated into ${newRoots.length} root(s). Points stay up for comparison — step 4 clears them. Ctrl+Z undoes the cut, again undoes the carve.`;
       } catch (e: unknown) {
         stageStatus.textContent = `Step 3 failed: ${e instanceof Error ? e.message : String(e)}`;
         StatusMessage.showTemporaryMessage(stageStatus.textContent, 8000);
@@ -8197,9 +8231,21 @@ class PieceSplitTool extends LayerTool<SegmentationUserLayer> {
     };
 
     const runStageByWave = (wave: number) => {
+      // The buttons are disabled out of turn, but Enter and the keyboard reach
+      // here too, so the order is enforced where it is decided, not only where
+      // it is drawn.
+      if (!stageEnabled(wave, stepStage, true)) {
+        const blocked = stageBlockedReason(wave, stepStage);
+        if (blocked !== undefined) {
+          stageStatus.textContent = blocked;
+          renderStages();
+        }
+        return;
+      }
       if (wave === 1) return void runPointsStep();
       if (wave === 2) return void runCarveStep();
-      return void runCutStep();
+      if (wave === 3) return void runCutStep();
+      return clearPoints();
     };
 
     // --- Click placement ---
@@ -8289,7 +8335,7 @@ class PieceSplitTool extends LayerTool<SegmentationUserLayer> {
     activation.bindAction("apply", (event) => {
       event.stopPropagation();
       if (pieceSplitState.advanced.value) {
-        runStageByWave(stepStage + 1 > 3 ? 3 : stepStage + 1);
+        runStageByWave(stepStage + 1);
       } else {
         void runFullSplit();
       }
