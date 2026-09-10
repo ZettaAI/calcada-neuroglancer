@@ -13,11 +13,11 @@ import type { Root } from "react-dom/client";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { BRANCH_CREATE_FOLLOW_LIMIT_MS } from "#src/datasource/calcada/branch_picker_logic.js";
 import type {
   CalcadaBranch,
   CalcadaGraphSource,
 } from "#src/datasource/calcada/frontend.js";
-import { BRANCH_CREATE_FOLLOW_LIMIT_MS } from "#src/datasource/calcada/branch_picker_logic.js";
 import {
   branchOptions,
   CalcadaBranchPicker,
