@@ -28,6 +28,15 @@ export const NO_BRANCHES = new WatchableValue<CalcadaBranch[]>([]);
 const BRANCH_CREATING_POLL_MS = 2000;
 const BRANCH_CREATING_POLL_LIMIT = 300;
 
+/**
+ * How long anything is still watching a fork this session started, and so how
+ * long a caller can keep claiming to be following one. Past it both watchers
+ * below have given up: whatever the copy does next, nobody here will hear
+ * about it.
+ */
+export const BRANCH_CREATE_FOLLOW_LIMIT_MS =
+  BRANCH_CREATING_POLL_MS * BRANCH_CREATING_POLL_LIMIT;
+
 // Follows an async fork to completion, so the picker learns it landed (or
 // failed) from the operation itself rather than waiting for a branch-list
 // refresh to notice. The operation reports running-or-terminal and nothing

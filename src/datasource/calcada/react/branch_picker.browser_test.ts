@@ -219,12 +219,23 @@ describe("Graph tab branch row layout", () => {
   it("centres the Branch label on its picker, not on the whole block", () => {
     const label = branchLabel.getBoundingClientRect();
     const trigger = picker().getBoundingClientRect();
-    // The block below the picker is several rows tall, so a label centred on
-    // the cell rather than on the picker would sit well below it.
-    expect(label.top + label.height / 2).toBeCloseTo(
-      trigger.top + trigger.height / 2,
-      0,
-    );
+    const group = block(
+      ".neuroglancer-calcada-branch-new-group",
+    ).getBoundingClientRect();
+    const labelMiddle = label.top + label.height / 2;
+
+    // A couple of pixels of slack, not none: the label's box is a line box,
+    // so its height — and with it where rounding lands — moves with whatever
+    // font the platform resolves. The regression this guards against is off
+    // by far more than that.
+    const pickerMiddle = trigger.top + trigger.height / 2;
+    expect(Math.abs(labelMiddle - pickerMiddle)).toBeLessThan(2);
+
+    // The other half of the claim, and the one with real room in it: centred
+    // on the whole branch block (picker plus the new-branch section under it)
+    // would drop the label most of a row below the picker it names.
+    const blockMiddle = (trigger.top + group.bottom) / 2;
+    expect(Math.abs(labelMiddle - blockMiddle)).toBeGreaterThan(8);
   });
 
   it("uses one spacing step for every gap in the row", () => {

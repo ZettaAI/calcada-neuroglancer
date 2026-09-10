@@ -185,7 +185,10 @@
 .neuroglancer-calcada-layer-controls {
   /* One step for every gap in these rows — label to control, row to row, and
      between the controls inside a row — so the tab reads as an even grid
-     rather than three independently spaced rows. */
+     rather than three independently spaced rows. Only this rule defines it;
+     the blocks below repeat the value as a fallback so one mounted outside
+     this grid (a test harness, a future host) still spaces itself rather
+     than collapsing to no gap at all. */
   --calcada-gap: 6px;
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr);
@@ -239,8 +242,8 @@
 .neuroglancer-calcada-branch-new-group {
   display: flex;
   flex-direction: column;
-  gap: var(--calcada-gap);
-  margin-top: var(--calcada-gap);
+  gap: var(--calcada-gap, 6px);
+  margin-top: var(--calcada-gap, 6px);
   min-width: 0;
 }
 
@@ -248,7 +251,7 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--calcada-gap);
+  gap: var(--calcada-gap, 6px);
   min-width: 0;
 }
 
@@ -262,7 +265,7 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--calcada-gap);
+  gap: var(--calcada-gap, 6px);
   /* Without this the form's automatic minimum size is driven by the parent-
      branch trigger's full (un-ellipsized) label text, so a long branch name
      rigidifies the form wider than the side panel and pushes it — and the
@@ -296,7 +299,7 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--calcada-gap);
+  gap: var(--calcada-gap, 6px);
   min-width: 0;
   max-width: 100%;
 }

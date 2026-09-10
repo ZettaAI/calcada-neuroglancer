@@ -11,12 +11,13 @@
 import { act, createElement } from "react";
 import type { Root } from "react-dom/client";
 import { createRoot } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
   CalcadaBranch,
   CalcadaGraphSource,
 } from "#src/datasource/calcada/frontend.js";
+import { BRANCH_CREATE_FOLLOW_LIMIT_MS } from "#src/datasource/calcada/branch_picker_logic.js";
 import {
   branchOptions,
   CalcadaBranchPicker,
@@ -467,6 +468,32 @@ describe("CalcadaBranchPicker new-branch form", () => {
     // honest signal is that something is happening.
     expect(spinner()).not.toBeNull();
     expect(container.querySelector('[role="progressbar"]')).toBeNull();
+  });
+
+  it("stops following a copy once nothing is watching it any more", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = makeHarness();
+      harness.createBody = {
+        branch_id: 9,
+        branch_name: "fork",
+        status: "creating",
+      };
+      mount(harness);
+      openForm();
+      await submitName("fork");
+      expect(createButton().disabled).toBe(true);
+
+      // Both watchers have given up by now and neither says so, so the form
+      // would otherwise stay disabled for the rest of the session.
+      act(() => {
+        vi.advanceTimersByTime(BRANCH_CREATE_FOLLOW_LIMIT_MS);
+      });
+      expect(createButton().disabled).toBe(false);
+      expect(spinner()).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("keeps loading while a refresh has yet to list the new branch", async () => {

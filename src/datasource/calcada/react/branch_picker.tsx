@@ -13,6 +13,7 @@ import { LoaderCircleIcon, MinusIcon, PlusIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import {
+  BRANCH_CREATE_FOLLOW_LIMIT_MS,
   branchOptions,
   clearSegmentSelection,
   defaultParentForNewBranch,
@@ -142,6 +143,20 @@ export function CalcadaBranchPicker({
     setNewBranchName("");
     setFormOpen(false);
   }, [copyDone]);
+
+  // Both watchers give up eventually — the create poll after enough dropped
+  // requests, the branch-list watch after its attempt limit — and neither says
+  // so. Without this the form would sit disabled for the rest of the session
+  // on a copy nobody is following any more; the branch itself is unaffected,
+  // and the dropdown still shows it landing.
+  useEffect(() => {
+    if (copyingBranchId === undefined) return;
+    const timer = setTimeout(
+      () => setCopyingBranchId(undefined),
+      BRANCH_CREATE_FOLLOW_LIMIT_MS,
+    );
+    return () => clearTimeout(timer);
+  }, [copyingBranchId]);
 
   const onBranchChange = (key: string) => {
     const parsed = Number.parseInt(key, 10);
