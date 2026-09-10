@@ -35,8 +35,38 @@ const BRANCHES: CalcadaBranch[] = [
 ];
 
 let target: HTMLDivElement;
+let host: HTMLDivElement;
+let branchLabel: HTMLDivElement;
 let disposer: Disposer;
 let branchId: TrackableValue<number>;
+
+/**
+ * The Graph tab's real row shape: the shared label/control grid, one
+ * `display: contents` row inside it, and the branch control as that row's
+ * control element. The branch control hands its blocks to the grid rather
+ * than laying them out itself, so mounting it bare would measure a layout
+ * the tab never renders.
+ */
+function mountBranchRow() {
+  target = document.createElement("div");
+  // The real constraint: a side panel far narrower than these names.
+  target.style.cssText =
+    "position: fixed; top: 120px; left: 120px; width: 220px;";
+  const grid = document.createElement("div");
+  grid.className = "neuroglancer-calcada-layer-controls";
+  const row = document.createElement("div");
+  row.className = "neuroglancer-layer-control-container";
+  branchLabel = document.createElement("div");
+  branchLabel.className = "neuroglancer-layer-control-label-container";
+  branchLabel.textContent = "Branch";
+  host = document.createElement("div");
+  host.className = "neuroglancer-calcada-branch-control";
+  row.appendChild(branchLabel);
+  row.appendChild(host);
+  grid.appendChild(row);
+  target.appendChild(grid);
+  document.body.appendChild(target);
+}
 
 function makeGraph() {
   const branchId = new TrackableValue<number>(0, (x) => x);
@@ -70,13 +100,8 @@ const OPEN_WAIT = 900;
 beforeEach(async () => {
   const { graph, segmentationGroupState, branchId: id } = makeGraph();
   branchId = id;
-  target = document.createElement("div");
-  // The real constraint: a side panel far narrower than these names.
-  target.style.cssText =
-    "position: fixed; top: 120px; left: 120px; width: 220px;";
-  target.className = "neuroglancer-calcada-branch-control";
-  document.body.appendChild(target);
-  disposer = mountComponent(target, CalcadaBranchPicker, {
+  mountBranchRow();
+  disposer = mountComponent(host, CalcadaBranchPicker, {
     graph,
     branchId,
     segmentationGroupState,
@@ -95,7 +120,7 @@ afterEach(() => {
 // itself rather than on a stopwatch is what keeps this suite from flaking.
 function pickerRendered() {
   return vi.waitFor(() => {
-    if (target.querySelector('[data-slot="combobox-trigger"]') === null) {
+    if (host.querySelector('[data-slot="combobox-trigger"]') === null) {
       throw new Error("CalcadaBranchPicker has not rendered yet");
     }
   });
@@ -113,7 +138,7 @@ function bubble() {
 
 async function openDropdown() {
   await userEvent.click(
-    target.querySelector<HTMLElement>('[data-slot="combobox-trigger"]')!,
+    host.querySelector<HTMLElement>('[data-slot="combobox-trigger"]')!,
   );
   await settle(150);
 }
@@ -143,9 +168,9 @@ describe("CalcadaBranchPicker in a narrow panel", () => {
 
   it('stacks the new-branch name input under its "from" picker', async () => {
     await userEvent.click(
-      target.querySelector<HTMLElement>(".neuroglancer-calcada-branch-new")!,
+      host.querySelector<HTMLElement>(".neuroglancer-calcada-branch-new")!,
     );
-    const form = target.querySelector<HTMLElement>(
+    const form = host.querySelector<HTMLElement>(
       ".neuroglancer-calcada-branch-create-form",
     )!;
     await vi.waitFor(() => {
@@ -179,5 +204,94 @@ describe("CalcadaBranchPicker in a narrow panel", () => {
     );
     expect(content.contains(hit)).toBe(false);
     expect(branchId.value).toBe(0);
+  });
+});
+
+describe("Graph tab branch row layout", () => {
+  function picker() {
+    return host.querySelector<HTMLElement>('[data-slot="combobox-trigger"]')!;
+  }
+
+  function block(selector: string) {
+    return host.querySelector<HTMLElement>(selector)!;
+  }
+
+  it("centres the Branch label on its picker, not on the whole block", () => {
+    const label = branchLabel.getBoundingClientRect();
+    const trigger = picker().getBoundingClientRect();
+    // The block below the picker is several rows tall, so a label centred on
+    // the cell rather than on the picker would sit well below it.
+    expect(label.top + label.height / 2).toBeCloseTo(
+      trigger.top + trigger.height / 2,
+      0,
+    );
+  });
+
+  it("uses one spacing step for every gap in the row", () => {
+    const grid = target.querySelector<HTMLElement>(
+      ".neuroglancer-calcada-layer-controls",
+    )!;
+    const gridStyle = getComputedStyle(grid);
+    const gaps = [gridStyle.rowGap, gridStyle.columnGap];
+    for (const selector of [
+      ".neuroglancer-calcada-branch-new-group",
+      ".neuroglancer-calcada-branch-actions",
+      ".neuroglancer-calcada-branch-create-form",
+    ]) {
+      const style = getComputedStyle(block(selector));
+      gaps.push(style.rowGap, style.columnGap);
+    }
+    expect(new Set(gaps).size).toBe(1);
+  });
+
+  it("divides the new-branch block from the picker by more than that step", () => {
+    const trigger = picker().getBoundingClientRect();
+    const group = block(".neuroglancer-calcada-branch-new-group");
+    const step = Number.parseFloat(
+      getComputedStyle(block(".neuroglancer-calcada-branch-actions")).rowGap,
+    );
+    expect(group.getBoundingClientRect().top - trigger.bottom).toBeGreaterThan(
+      step,
+    );
+  });
+
+  async function showDiffLink() {
+    branchId.value = 1;
+    return vi.waitFor(() => {
+      const element = host.querySelector<HTMLElement>(".calcada-open-diff");
+      if (element === null) throw new Error("the diff link has not rendered");
+      return element;
+    });
+  }
+
+  it('puts "Open diff" at the right end of the New branch row', async () => {
+    // Both buttons together need more than the 220px panel the rest of this
+    // suite pins; a panel dragged wide enough for them is where sharing a row
+    // is the question at all.
+    target.style.width = "340px";
+    const diff = await showDiffLink();
+    const diffRect = diff.getBoundingClientRect();
+    const newRect = block(
+      ".neuroglancer-calcada-branch-new",
+    ).getBoundingClientRect();
+    expect(diffRect.top).toBeCloseTo(newRect.top, 0);
+    expect(diffRect.left).toBeGreaterThan(newRect.right);
+    const actions = block(
+      ".neuroglancer-calcada-branch-actions",
+    ).getBoundingClientRect();
+    expect(actions.right - diffRect.right).toBeLessThan(1);
+  });
+
+  it('keeps "Open diff" right-aligned once the panel is too narrow to share', async () => {
+    const diff = await showDiffLink();
+    const diffRect = diff.getBoundingClientRect();
+    const newRect = block(
+      ".neuroglancer-calcada-branch-new",
+    ).getBoundingClientRect();
+    expect(diffRect.top).toBeGreaterThanOrEqual(newRect.bottom);
+    const actions = block(
+      ".neuroglancer-calcada-branch-actions",
+    ).getBoundingClientRect();
+    expect(actions.right - diffRect.right).toBeLessThan(1);
   });
 });

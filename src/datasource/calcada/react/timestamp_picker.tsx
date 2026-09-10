@@ -156,9 +156,15 @@ export function CalcadaTimestampPicker({
         type="time"
         step="1"
         aria-label="Time of day"
+        // Sized to the hh:mm:ss glyphs plus this field's own padding. A time
+        // input cannot be shrink-wrapped — `max-content` and
+        // `field-sizing: content` both report the browser's roomier intrinsic
+        // width — so the fit has to be stated, and a browser test measures the
+        // glyphs to catch a font that outgrows it rather than clipping the
+        // seconds.
         className={cn(
           CONTROL_SIZE_CLASS,
-          "w-28 shrink-0 appearance-none [&::-webkit-calendar-picker-indicator]:hidden",
+          "w-22 shrink-0 appearance-none [&::-webkit-calendar-picker-indicator]:hidden",
         )}
         value={selected === undefined ? "" : timeOfDay(selected)}
         // A native time/date input fires no `input`/`change` event at all

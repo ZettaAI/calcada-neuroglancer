@@ -41,6 +41,8 @@ interface Harness {
   /** Every state mutation the picker performs, in the order it performed it. */
   mutations: string[];
   refreshCount: () => number;
+  /** The body the next `createBranch` answers with. */
+  createBody: Record<string, unknown>;
 }
 
 function makeHarness(initialBranchId = 0): Harness {
@@ -49,12 +51,15 @@ function makeHarness(initialBranchId = 0): Harness {
   branchId.changed.add(() => mutations.push(`branchId=${branchId.value}`));
   const branches = new WatchableValue<CalcadaBranch[]>([...BRANCHES]);
   let refreshes = 0;
+  const created = { body: {} as Record<string, unknown> };
   const graph = {
     branches,
     branchId,
     triggerBranchRefresh: () => {
       refreshes += 1;
     },
+    createBranch: async () =>
+      ({ json: async () => created.body }) as unknown as Response,
     info: {
       app: {
         segmentationUrl: "middleauth+https://graph.example.com/segmentation",
@@ -76,6 +81,12 @@ function makeHarness(initialBranchId = 0): Harness {
     segmentationGroupState,
     mutations,
     refreshCount: () => refreshes,
+    set createBody(body: Record<string, unknown>) {
+      created.body = body;
+    },
+    get createBody() {
+      return created.body;
+    },
   };
 }
 
@@ -338,5 +349,140 @@ describe("CalcadaBranchPicker", () => {
     expect(
       form.querySelector('[data-slot="combobox-trigger"]')?.textContent,
     ).toBe("from: child");
+  });
+});
+
+describe("CalcadaBranchPicker new-branch form", () => {
+  function toggleButton() {
+    return container.querySelector<HTMLButtonElement>(
+      ".neuroglancer-calcada-branch-new",
+    )!;
+  }
+
+  function form() {
+    return container.querySelector<HTMLElement>(
+      ".neuroglancer-calcada-branch-create-form",
+    )!;
+  }
+
+  function createButton() {
+    return form().querySelector<HTMLButtonElement>('button[type="submit"]')!;
+  }
+
+  function spinner() {
+    return createButton().querySelector<HTMLElement>(".lucide-loader-circle");
+  }
+
+  function openForm() {
+    act(() => {
+      toggleButton().click();
+    });
+  }
+
+  async function submitName(name: string) {
+    typeQuery(
+      form().querySelector<HTMLInputElement>('input[name="branch_name"]')!,
+      name,
+    );
+    await act(async () => {
+      createButton().click();
+    });
+  }
+
+  function patchBranch(
+    harness: Harness,
+    id: number,
+    change: Partial<CalcadaBranch>,
+  ) {
+    act(() => {
+      harness.branches.value = harness.branches.value.map((branch) =>
+        branch.id === id ? { ...branch, ...change } : branch,
+      );
+    });
+  }
+
+  it("swaps the toggle's plus for a minus while the form is open", () => {
+    mount(makeHarness());
+    expect(toggleButton().querySelector(".lucide-plus")).not.toBeNull();
+    expect(toggleButton().querySelector(".lucide-minus")).toBeNull();
+    openForm();
+    expect(toggleButton().querySelector(".lucide-minus")).not.toBeNull();
+    expect(toggleButton().querySelector(".lucide-plus")).toBeNull();
+  });
+
+  it("closes the form as soon as a branch comes back ready", async () => {
+    const harness = makeHarness();
+    harness.createBody = {
+      branch_id: 9,
+      branch_name: "instant",
+      status: "active",
+    };
+    mount(harness);
+    openForm();
+    await submitName("instant");
+    expect(form().style.display).toBe("none");
+    expect(spinner()).toBeNull();
+    expect(harness.branchId.value).toBe(9);
+  });
+
+  it("holds the form in a loading state until the fork finishes copying", async () => {
+    const harness = makeHarness();
+    harness.createBody = {
+      branch_id: 9,
+      branch_name: "fork",
+      status: "creating",
+    };
+    mount(harness);
+    openForm();
+    await submitName("fork");
+
+    // The create call has answered, but the server is still copying: the form
+    // stays open and locked rather than looking finished.
+    expect(form().style.display).toBe("");
+    expect(createButton().disabled).toBe(true);
+    expect(spinner()).not.toBeNull();
+
+    patchBranch(harness, 9, { status: "active" });
+    expect(form().style.display).toBe("none");
+    expect(spinner()).toBeNull();
+    expect(
+      form().querySelector<HTMLInputElement>('input[name="branch_name"]')!
+        .value,
+    ).toBe("");
+  });
+
+  it("promises no percentage, only that the copy is running", async () => {
+    const harness = makeHarness();
+    harness.createBody = {
+      branch_id: 9,
+      branch_name: "fork",
+      status: "creating",
+    };
+    mount(harness);
+    openForm();
+    await submitName("fork");
+
+    // Neither the create operation nor the branch row carries a percentage —
+    // the server reports running-or-terminal and nothing else — so the only
+    // honest signal is that something is happening.
+    expect(spinner()).not.toBeNull();
+    expect(container.querySelector('[role="progressbar"]')).toBeNull();
+  });
+
+  it("keeps loading while a refresh has yet to list the new branch", async () => {
+    const harness = makeHarness();
+    harness.createBody = {
+      branch_id: 9,
+      branch_name: "fork",
+      status: "creating",
+    };
+    mount(harness);
+    openForm();
+    await submitName("fork");
+    act(() => {
+      harness.branches.value = [...BRANCHES];
+    });
+    expect(form().style.display).toBe("");
+    expect(createButton().disabled).toBe(true);
   });
 });

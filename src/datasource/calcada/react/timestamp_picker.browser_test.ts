@@ -11,6 +11,10 @@
 import { userEvent } from "@vitest/browser/context";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+// The field is sized to its own text, so it has to be measured in the font the
+// tab actually renders: `.nge-ui` picks it up from `--nge-font`, which only
+// these tokens define.
+import "#src/editing/ui/editing_theme.css";
 import "#src/datasource/calcada/calcada.css";
 
 import { CalcadaTimestampPicker } from "#src/datasource/calcada/react/timestamp_picker.js";
@@ -96,6 +100,37 @@ describe("CalcadaTimestampPicker in a narrow panel", () => {
     // line; the fixed-width time field and reset button share the line below.
     expect(dateRect.bottom).toBeLessThanOrEqual(timeRect.top + 1);
     expect(Math.abs(timeRect.top - resetRect.top)).toBeLessThan(4);
+  });
+
+  it("fits the time field to its hh:mm:ss segments with no dead space", async () => {
+    await pickerRendered();
+    const field = timeField();
+    const style = getComputedStyle(field);
+
+    // The eight glyphs alone, in the field's own font. Measuring the input
+    // itself would prove nothing: `max-content` and `field-sizing: content`
+    // both hand back the browser's roomier intrinsic width for a time
+    // control, which is the very slack this is here to catch.
+    const glyphs = document.createElement("span");
+    glyphs.style.font = style.font;
+    glyphs.style.whiteSpace = "pre";
+    glyphs.textContent = "13:45:59";
+    field.parentElement!.appendChild(glyphs);
+    const textWidth = glyphs.getBoundingClientRect().width;
+    glyphs.remove();
+
+    const wanted =
+      textWidth +
+      Number.parseFloat(style.paddingLeft) +
+      Number.parseFloat(style.paddingRight) +
+      Number.parseFloat(style.borderLeftWidth) +
+      Number.parseFloat(style.borderRightWidth);
+
+    const actual = field.getBoundingClientRect().width;
+    // Below this the seconds clip; far above it the field trails an empty
+    // strip the browser's own sizing would happily leave there (`w-28` did).
+    expect(actual).toBeGreaterThanOrEqual(wanted);
+    expect(actual - wanted).toBeLessThan(6);
   });
 });
 

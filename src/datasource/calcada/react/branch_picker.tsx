@@ -9,6 +9,7 @@
  *      http://www.apache.org/licenses/LICENSE-2.0
  */
 
+import { LoaderCircleIcon, MinusIcon, PlusIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import {
@@ -100,7 +101,13 @@ export function CalcadaBranchPicker({
   );
   const [newBranchName, setNewBranchName] = useState("");
   const [createError, setCreateError] = useState("");
-  const [creating, setCreating] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  // The branch a submit handed off to the server's async copy, followed here
+  // until it stops being "creating" so the form can stay in its loading state
+  // for the whole fork rather than only for the create request itself.
+  const [copyingBranchId, setCopyingBranchId] = useState<number | undefined>(
+    undefined,
+  );
 
   const unmounted = useRef(false);
   useEffect(() => {
@@ -116,6 +123,25 @@ export function CalcadaBranchPicker({
   }, [formOpen]);
 
   const options = branchOptions(branches, selectedId);
+
+  const copyingBranch =
+    copyingBranchId === undefined
+      ? undefined
+      : branches.find((branch) => branch.id === copyingBranchId);
+  // A branch missing from the list counts as still copying, not as finished:
+  // a refresh can land between the optimistic insert and the server listing
+  // the new branch, and dropping the loading state there would flash the form
+  // back open mid-fork.
+  const copyDone =
+    copyingBranch !== undefined && copyingBranch.status !== "creating";
+  const creating = submitting || copyingBranchId !== undefined;
+
+  useEffect(() => {
+    if (!copyDone) return;
+    setCopyingBranchId(undefined);
+    setNewBranchName("");
+    setFormOpen(false);
+  }, [copyDone]);
 
   const onBranchChange = (key: string) => {
     const parsed = Number.parseInt(key, 10);
@@ -159,7 +185,7 @@ export function CalcadaBranchPicker({
     const name = newBranchName.trim();
     if (name.length === 0) return;
     const originBranchId = graph.branchId.value;
-    setCreating(true);
+    setSubmitting(true);
     try {
       const parsedParentId = Number.parseInt(parentValue, 10);
       const resolvedParentId = Number.isFinite(parsedParentId)
@@ -193,7 +219,6 @@ export function CalcadaBranchPicker({
           name: newName,
           status: newStatus,
           parentId: resolvedParentId,
-          progress: newStatus === "creating" ? 0 : undefined,
         },
       ];
       const operationId = body?.operation_id;
@@ -208,6 +233,8 @@ export function CalcadaBranchPicker({
       if (newStatus === "active") {
         clearSegmentSelection(segmentationGroupState);
         graph.branchId.value = newId;
+        setNewBranchName("");
+        setFormOpen(false);
       } else {
         watchBranchUntilActive(
           graph,
@@ -215,13 +242,14 @@ export function CalcadaBranchPicker({
           originBranchId,
           () => unmounted.current,
         );
+        // Leave the form open and loading: the copy is still running, and the
+        // Create button's spinner is what says so.
+        setCopyingBranchId(newId);
       }
-      setNewBranchName("");
-      setFormOpen(false);
       setCreateError("");
       graph.triggerBranchRefresh();
     } finally {
-      setCreating(false);
+      setSubmitting(false);
     }
   };
 
@@ -236,15 +264,36 @@ export function CalcadaBranchPicker({
       />
 
       <div className="neuroglancer-calcada-branch-new-group">
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          className="neuroglancer-calcada-branch-new self-start"
-          onClick={toggleForm}
-        >
-          + New branch
-        </Button>
+        <div className="neuroglancer-calcada-branch-actions">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="neuroglancer-calcada-branch-new"
+            onClick={toggleForm}
+          >
+            {formOpen ? <MinusIcon /> : <PlusIcon />}
+            New branch
+          </Button>
+
+          {graph !== undefined && selectedId !== MAIN_BRANCH_ID && (
+            <Button
+              variant="outline"
+              size="sm"
+              nativeButton={false}
+              className="calcada-open-diff"
+              render={
+                <a
+                  href={diffUrl(graph, selectedId)}
+                  target="_blank"
+                  rel="noopener"
+                />
+              }
+            >
+              Open diff
+            </Button>
+          )}
+        </div>
 
         <div
           className="neuroglancer-calcada-branch-create-form"
@@ -262,6 +311,7 @@ export function CalcadaBranchPicker({
             type="text"
             name="branch_name"
             className={cn(CONTROL_SIZE_CLASS, "min-w-0 flex-1")}
+            disabled={creating}
             value={newBranchName}
             onChange={(e) => setNewBranchName(e.currentTarget.value)}
             onKeyDown={(e) => {
@@ -282,6 +332,7 @@ export function CalcadaBranchPicker({
               submitCreate();
             }}
           >
+            {creating && <LoaderCircleIcon className="animate-spin" />}
             Create
           </Button>
 
@@ -290,24 +341,6 @@ export function CalcadaBranchPicker({
           </span>
         </div>
       </div>
-
-      {graph !== undefined && selectedId !== MAIN_BRANCH_ID && (
-        <Button
-          variant="outline"
-          size="sm"
-          nativeButton={false}
-          className="calcada-open-diff"
-          render={
-            <a
-              href={diffUrl(graph, selectedId)}
-              target="_blank"
-              rel="noopener"
-            />
-          }
-        >
-          Open diff
-        </Button>
-      )}
     </>
   );
 }
