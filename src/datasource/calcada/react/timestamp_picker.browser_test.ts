@@ -11,6 +11,10 @@
 import { userEvent } from "@vitest/browser/context";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+// The field is sized to its own text, so it has to be measured in the font the
+// tab actually renders: `.nge-ui` picks it up from `--nge-font`, which only
+// these tokens define.
+import "#src/editing/ui/editing_theme.css";
 import "#src/datasource/calcada/calcada.css";
 
 import { CalcadaTimestampPicker } from "#src/datasource/calcada/react/timestamp_picker.js";
@@ -96,6 +100,26 @@ describe("CalcadaTimestampPicker in a narrow panel", () => {
     // line; the fixed-width time field and reset button share the line below.
     expect(dateRect.bottom).toBeLessThanOrEqual(timeRect.top + 1);
     expect(Math.abs(timeRect.top - resetRect.top)).toBeLessThan(4);
+  });
+
+  it("lets the time field size itself to the segments it renders", async () => {
+    await pickerRendered();
+    const field = timeField();
+
+    // Compared against the control's own intrinsic width, never a digit
+    // string of our own: a time input renders in the browser's locale, so a
+    // 12-hour one lays out an AM/PM segment that "13:45:59" would not
+    // predict. A fixed width — too wide like the `w-28` this replaced, or too
+    // narrow to hold a meridiem — is exactly what this catches, in whichever
+    // locale the suite happens to run.
+    const probe = field.cloneNode(true) as HTMLInputElement;
+    probe.value = field.value;
+    probe.style.width = "auto";
+    field.parentElement!.appendChild(probe);
+    const intrinsic = probe.getBoundingClientRect().width;
+    probe.remove();
+
+    expect(field.getBoundingClientRect().width).toBeCloseTo(intrinsic, 0);
   });
 });
 

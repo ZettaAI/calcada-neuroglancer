@@ -5581,10 +5581,6 @@ export interface CalcadaBranch {
   name: string;
   status: string;
   parentId: number;
-  // 0..1 while a fork is being copied, from the create operation's own
-  // status. Only the session that started the fork has the operation id, so
-  // everyone else sees a plain "creating…" until it finishes.
-  progress?: number;
 }
 
 export class CalcadaGraphSource extends SegmentationGraphSource {
@@ -5743,12 +5739,13 @@ export class CalcadaGraphSource extends SegmentationGraphSource {
     });
   }
 
-  // Status of an async create-from-branch copy. `progress` spans BOTH copy
-  // phases — rows and overlay objects — in weighted units, so it does not
-  // advance at a constant rate.
+  // Status of an async create-from-branch copy. Running or terminal only: the
+  // server reports no percentage for the copy, and the operation record it
+  // answers from carries none either, so how far along a fork is is not
+  // something anyone can ask.
   public async createBranchStatus(
     operationId: number,
-  ): Promise<{ status: string; progress: number }> {
+  ): Promise<{ status: string }> {
     const { fetchOkImpl, baseUrl } = this.httpSource;
     const response = await fetchOkImpl(
       `${baseUrl}/branch/create/${operationId}`,
@@ -5757,7 +5754,6 @@ export class CalcadaGraphSource extends SegmentationGraphSource {
     const body = await response.json();
     return {
       status: typeof body?.status === "string" ? body.status : "running",
-      progress: typeof body?.progress === "number" ? body.progress : 0,
     };
   }
 
