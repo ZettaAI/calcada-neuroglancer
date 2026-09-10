@@ -102,35 +102,24 @@ describe("CalcadaTimestampPicker in a narrow panel", () => {
     expect(Math.abs(timeRect.top - resetRect.top)).toBeLessThan(4);
   });
 
-  it("fits the time field to its hh:mm:ss segments with no dead space", async () => {
+  it("lets the time field size itself to the segments it renders", async () => {
     await pickerRendered();
     const field = timeField();
-    const style = getComputedStyle(field);
 
-    // The eight glyphs alone, in the field's own font. Measuring the input
-    // itself would prove nothing: `max-content` and `field-sizing: content`
-    // both hand back the browser's roomier intrinsic width for a time
-    // control, which is the very slack this is here to catch.
-    const glyphs = document.createElement("span");
-    glyphs.style.font = style.font;
-    glyphs.style.whiteSpace = "pre";
-    glyphs.textContent = "13:45:59";
-    field.parentElement!.appendChild(glyphs);
-    const textWidth = glyphs.getBoundingClientRect().width;
-    glyphs.remove();
+    // Compared against the control's own intrinsic width, never a digit
+    // string of our own: a time input renders in the browser's locale, so a
+    // 12-hour one lays out an AM/PM segment that "13:45:59" would not
+    // predict. A fixed width — too wide like the `w-28` this replaced, or too
+    // narrow to hold a meridiem — is exactly what this catches, in whichever
+    // locale the suite happens to run.
+    const probe = field.cloneNode(true) as HTMLInputElement;
+    probe.value = field.value;
+    probe.style.width = "auto";
+    field.parentElement!.appendChild(probe);
+    const intrinsic = probe.getBoundingClientRect().width;
+    probe.remove();
 
-    const wanted =
-      textWidth +
-      Number.parseFloat(style.paddingLeft) +
-      Number.parseFloat(style.paddingRight) +
-      Number.parseFloat(style.borderLeftWidth) +
-      Number.parseFloat(style.borderRightWidth);
-
-    const actual = field.getBoundingClientRect().width;
-    // Below this the seconds clip; far above it the field trails an empty
-    // strip the browser's own sizing would happily leave there (`w-28` did).
-    expect(actual).toBeGreaterThanOrEqual(wanted);
-    expect(actual - wanted).toBeLessThan(6);
+    expect(field.getBoundingClientRect().width).toBeCloseTo(intrinsic, 0);
   });
 });
 
