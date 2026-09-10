@@ -116,18 +116,26 @@ export default defineWorkspace([
         "tests/**/*.browser_test.ts",
         "src/*.bundle.js",
       ],
-      // The vendored shadcn components reach the React runtime through bare
-      // specifiers the entry scan does not follow, so Vite meets them for the
-      // first time while a test is already running and re-optimises. That
-      // reloads the test module mid-run and Vitest loses the suite it was in —
-      // reported as "failed to find the current suite", on a machine where the
-      // dependency cache happened to be cold.
-      // Only the JSX runtimes, which is what the scan misses and what Vitest's
-      // warning names. Listing react and react-dom here as well pre-bundles them
-      // separately from the copy the component libraries resolve, and two React
-      // instances leave the hook dispatcher null — "Cannot read properties of
-      // null (reading 'useMemo')" from inside react-dom.
-      include: ["react/jsx-runtime", "react/jsx-dev-runtime"],
+      // JSX components reach their runtime through bare specifiers the entry
+      // scan does not follow, so Vite meets one for the first time while a test
+      // is already running, re-optimises, and reloads. Whichever file was being
+      // collected at that moment loses its suite — reported as "failed to find
+      // the current suite" or "No test suite found in file", and only on a
+      // machine whose dependency cache is cold, which on CI is every run.
+      // Both frameworks are listed because this repo has both: preact for the
+      // editing UI, react for the migrated widgets. Both dev and production
+      // runtimes, since which one is imported depends on the mode.
+      // Only the JSX runtimes. Listing react and react-dom here as well
+      // pre-bundles them separately from the copy the component libraries
+      // resolve, and two React instances leave the hook dispatcher null —
+      // "Cannot read properties of null (reading 'useMemo')" from inside
+      // react-dom.
+      include: [
+        "react/jsx-runtime",
+        "react/jsx-dev-runtime",
+        "preact/jsx-runtime",
+        "preact/jsx-dev-runtime",
+      ],
     },
     test: {
       name: "browser",
