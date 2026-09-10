@@ -28,11 +28,24 @@ export const NO_BRANCHES = new WatchableValue<CalcadaBranch[]>([]);
 const BRANCH_CREATING_POLL_MS = 2000;
 const BRANCH_CREATING_POLL_LIMIT = 300;
 
-// Follows an async fork to completion, feeding the dropdown a percentage.
+/**
+ * How long anything is still watching a fork this session started, and so how
+ * long a caller can keep claiming to be following one. Past it both watchers
+ * below have given up: whatever the copy does next, nobody here will hear
+ * about it.
+ */
+export const BRANCH_CREATE_FOLLOW_LIMIT_MS =
+  BRANCH_CREATING_POLL_MS * BRANCH_CREATING_POLL_LIMIT;
+
+// Follows an async fork to completion, so the picker learns it landed (or
+// failed) from the operation itself rather than waiting for a branch-list
+// refresh to notice. The operation reports running-or-terminal and nothing
+// else: neither it nor the branch row carries a percentage, so how far along
+// a copy is is not something anyone can ask.
 //
 // Only the session that started the fork can do this: the operation id is
 // returned by the create call and stored nowhere else, so a reload or another
-// user keeps the plain "creating…" the branch list already gives them.
+// user waits on the branch list instead.
 const BRANCH_CREATE_POLL_MS = 1000;
 // The operation id lives only in this session, so a fork we can no longer reach
 // is one nobody will ever get an answer about. Give up rather than polling for
@@ -45,11 +58,9 @@ export async function pollBranchCreate(
   operationId: number,
   isCancelled: () => boolean,
 ) {
-  const patch = (
-    change: Partial<{ status: string; progress: number | undefined }>,
-  ) => {
+  const patch = (status: string) => {
     graph.branches.value = graph.branches.value.map((branch) =>
-      branch.id === branchId ? { ...branch, ...change } : branch,
+      branch.id === branchId ? { ...branch, status } : branch,
     );
   };
   let failures = 0;
@@ -57,31 +68,24 @@ export async function pollBranchCreate(
     await new Promise((resolve) => setTimeout(resolve, BRANCH_CREATE_POLL_MS));
     if (isCancelled()) return;
     let status: string;
-    let progress: number;
     try {
-      ({ status, progress } = await graph.createBranchStatus(operationId));
+      ({ status } = await graph.createBranchStatus(operationId));
       failures = 0;
     } catch {
-      // A dropped poll is not a failed copy — the server is still working. Keep
-      // the last percentage and try again rather than declaring the fork dead.
-      if (++failures >= BRANCH_CREATE_MAX_FAILURES) {
-        // Stop claiming a percentage we can no longer confirm; the row keeps
-        // saying "creating" until the branch list says otherwise.
-        patch({ progress: undefined });
-        return;
-      }
+      // A dropped poll is not a failed copy — the server is still working. Try
+      // again rather than declaring the fork dead.
+      if (++failures >= BRANCH_CREATE_MAX_FAILURES) return;
       continue;
     }
     if (isCancelled()) return;
     if (status === "completed") {
-      patch({ status: "active", progress: undefined });
+      patch("active");
       return;
     }
     if (status === "failed") {
-      patch({ status: "abandoned", progress: undefined });
+      patch("abandoned");
       return;
     }
-    patch({ progress });
   }
 }
 
@@ -140,14 +144,8 @@ export function branchLabel(
   branch: CalcadaBranch,
   branches: readonly CalcadaBranch[],
 ) {
-  const { name, status, parentId, progress } = branch;
-  if (status === "creating") {
-    const pct =
-      progress === undefined
-        ? ""
-        : ` ${Math.round(Math.min(Math.max(progress, 0), 1) * 100)}%`;
-    return `${name} (creating…${pct})`;
-  }
+  const { name, status, parentId } = branch;
+  if (status === "creating") return `${name} (creating…)`;
   if (status !== "active") return `${name} (${status})`;
   if (parentId !== MAIN_BRANCH_ID) {
     const parentName =
