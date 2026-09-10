@@ -284,7 +284,7 @@ const RED_COLOR = vec3.fromValues(1, 0, 0);
 const BLUE_COLOR = vec3.fromValues(0, 0, 1);
 // Points the split placed itself. Still plainly the colour of their side — a
 // lighter blue and a lighter red — because the side is the thing a proofreader
-// reads off them; the dark border is what says the split placed it.
+// reads off them; the lighter shade is what says the split placed it.
 const ARTIFICIAL_RED_COLOR = vec3.fromValues(1, 0.45, 0.5);
 const ARTIFICIAL_BLUE_COLOR = vec3.fromValues(0.45, 0.55, 1);
 const GREEN_COLOR = vec3.fromValues(0, 1, 0);
@@ -3813,29 +3813,11 @@ void main() {
       "pieceSplitAutoRed",
       ARTIFICIAL_RED_COLOR,
     );
-    // Marker geometry stays at the renderer's defaults: the 20px this shader
-    // used to ask for was tuned while it silently never compiled.
-    const PIECE_SPLIT_POINT_SHADER = `
-void main() {
-  setColor(vec4(defaultColor(), 1.0));
-  setPointMarkerBorderColor(vec4(1.0, 1.0, 1.0, 1.0));
-}
-`;
-    pieceSplitBlueAnnotation.displayState.shader.value =
-      PIECE_SPLIT_POINT_SHADER;
-    pieceSplitRedAnnotation.displayState.shader.value =
-      PIECE_SPLIT_POINT_SHADER;
-    // Same marks as the proofreader's own, told apart by the dark border.
-    const PIECE_SPLIT_AUTO_POINT_SHADER = `
-void main() {
-  setColor(vec4(defaultColor(), 1.0));
-  setPointMarkerBorderColor(vec4(0.0, 0.0, 0.0, 1.0));
-}
-`;
-    pieceSplitAutoBlueAnnotation.displayState.shader.value =
-      PIECE_SPLIT_AUTO_POINT_SHADER;
-    pieceSplitAutoRedAnnotation.displayState.shader.value =
-      PIECE_SPLIT_AUTO_POINT_SHADER;
+    // No shader of their own: the same plain markers a merge places, telling
+    // the two sides apart by colour alone. An earlier one asked for a 20px
+    // marker with a white border, but it was written while the display state
+    // had no annotationProperties, which stops the shader compiling — so the
+    // renderer's default was what anyone ever saw.
     // The markers describe a cut in progress, so they are drawn only while the
     // Cut tool is open. The points themselves outlive the tool — reopening it
     // restores them — but leaving them on screen makes the viewer look like it
